@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="initial-scale=1.0, user-scalable=no">
+    <title>高德地图测试</title>
+    <style>
+        #map-container {
+            width: 100%;
+            height: 500px;
+        }
+    </style>
+</head>
+<body>
+    <h1>高德地图API测试</h1>
+    <div id="map-container"></div>
+    
+    <script type="text/javascript">
+        // 配置安全密钥
+        window._AMapSecurityConfig = {
+            securityJsCode: ''
+        };
+        
+        // 加载高德地图
+        const script = document.createElement('script');
+        script.src = 'https://webapi.amap.com/maps?v=2.0&key=0f7f4c52f812d5751764195d19045d1b';
+        script.async = true;
+        
+        script.onerror = function() {
+            console.error('地图脚本加载失败');
+        };
+        
+        script.onload = function() {
+            console.log('地图脚本加载成功');
+            if (window.AMap && typeof window.AMap.Map === 'function') {
+                console.log('AMap对象可用');
+                
+                // 初始化地图
+                const map = new AMap.Map('map-container', {
+                    zoom: 11,
+                    center: [118.7969, 32.0603],
+                    viewMode: '2D'
+                });
+                
+                console.log('地图初始化成功');
+                
+                // 添加标记
+                const marker = new AMap.Marker({
+                    position: [118.7969, 32.0603],
+                    title: '南京市中心'
+                });
+                map.add(marker);
+                
+            } else {
+                console.error('AMap对象不可用');
+                console.log('window.AMap:', window.AMap);
+            }
+        };
+        
+        document.body.appendChild(script);
+    </script>
+</body>
+</html>

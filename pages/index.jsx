@@ -1,7 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
+import { loadSavedTrips } from '../utils/trips';
+import { loadAMap, lazyLoadPlugins } from '../utils/amap';
 
 export default function Home() {
+  console.log('Home component rendered');
   const [destination, setDestination] = useState('南京');
   const [days, setDays] = useState(5);
   const [budget, setBudget] = useState(10000);
@@ -26,6 +29,9 @@ export default function Home() {
   const [savedTrips, setSavedTrips] = useState([]);
   const [expandedActivity, setExpandedActivity] = useState(null); // 存储展开的活动 {day: number, time: string}
   const [mapLoading, setMapLoading] = useState(true); // 地图加载状态
+  const [recordingTime, setRecordingTime] = useState(0); // 录音计时
+  const [isRecording, setIsRecording] = useState(false); // 录音状态
+  const recordingTimerRef = useRef(null); // 录音计时器引用
 
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL || '',
@@ -73,6 +79,7 @@ export default function Home() {
   const parseSpeechToForm = (text) => {
     if (!text || typeof text !== 'string') return;
     try {
+      // 不在此处改变地图加载状态，避免误触发“加载中”显示
       const t = text.trim();
 
       // Destination
@@ -136,107 +143,125 @@ export default function Home() {
     }
   };
 
-  // Load Gaode Maps script
+  // Load Gaode Maps via official loader
   useEffect(() => {
     const key = process.env.NEXT_PUBLIC_MAPS_API_KEY;
     console.log('地图API密钥配置:', key ? '已配置' : '未配置');
-    
+
     if (!key) {
       console.error('高德地图API密钥未配置，请检查NEXT_PUBLIC_MAPS_API_KEY环境变量');
+      setMapLoading(false);
       return;
     }
-    
-    const securityJsCode = process.env.NEXT_PUBLIC_AMAP_SECURITY_JS_CODE;
-    if (securityJsCode) {
-      window._AMapSecurityConfig = { securityJsCode };
-      console.log('地图安全代码已配置');
-    }
-    
-    // 检查是否已经加载了地图脚本
-    if (document.querySelector('script[src*="webapi.amap.com"]')) {
-      console.log('高德地图脚本已存在，跳过重复加载');
-      if (window.AMap && mapRef.current && !mapInstanceRef.current) {
-        initializeMap();
-      }
-      return;
-    }
-    
-    const script = document.createElement('script');
-    script.src = `https://webapi.amap.com/maps?v=2.0&key=${key}`;
-    script.async = true;
-    
-    script.onerror = () => {
-      console.error('高德地图脚本加载失败，请检查网络连接和API密钥');
-    };
-    
-    script.onload = () => {
-      console.log('高德地图脚本加载成功');
-      if (window.AMap && typeof window.AMap.Map === 'function') {
-        console.log('AMap对象已加载:', typeof window.AMap.Map);
-        initializeMap();
-      } else {
-        console.error('AMap对象未定义或Map构造函数不可用，脚本可能加载失败');
-        console.log('window.AMap:', window.AMap);
-      }
-    };
-    
-    document.body.appendChild(script);
-    
+
+    const securityJsCode = process.env.NEXT_PUBLIC_AMAP_SECURITY_JS_CODE || '';
+    window._AMapSecurityConfig = { securityJsCode };
+    console.log('地图安全代码配置:', securityJsCode ? '已配置' : '使用空安全代码');
+
+    let cancelled = false;
+    setMapLoading(true);
+    loadAMap()
+      .then(() => {
+        if (!cancelled && mapRef.current && !mapInstanceRef.current) {
+          initializeMap();
+        }
+      })
+      .catch((err) => {
+        console.error('高德地图加载失败:', err);
+        setMapLoading(false);
+      });
+
     return () => {
-      // 清理脚本
-      const existingScript = document.querySelector('script[src*="webapi.amap.com"]');
-      if (existingScript && existingScript !== script) {
-        document.body.removeChild(existingScript);
-      }
+      cancelled = true;
     };
   }, []);
   
   // 初始化地图函数
   const initializeMap = () => {
     try {
-      if (mapRef.current && window.AMap) {
-        console.log('开始初始化地图，容器:', mapRef.current);
-        setMapLoading(true);
-        mapInstanceRef.current = new window.AMap.Map(mapRef.current, {
-          zoom: 11,
-          center: [118.7969, 32.0603], // 南京市中心
-          viewMode: '2D',
-          mapStyle: 'amap://styles/normal',
-        });
-        console.log('地图初始化成功');
-        setMapLoading(false);
-        
-        // 添加地图控件
-        mapInstanceRef.current.addControl(new window.AMap.ToolBar());
-        mapInstanceRef.current.addControl(new window.AMap.Scale());
-        mapInstanceRef.current.addControl(new window.AMap.OverView());
-        
-        // 设置地图样式为更现代的外观
-        mapInstanceRef.current.setMapStyle('amap://styles/light');
-        
-        // 添加一个默认标记点用于测试
-        const marker = new window.AMap.Marker({
-          position: [118.7969, 32.0603],
-          title: '南京市中心',
-          icon: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b.png',
-          offset: new window.AMap.Pixel(-13, -30)
-        });
-        mapInstanceRef.current.add(marker);
-        
-        // 添加信息窗口
-        const infoWindow = new window.AMap.InfoWindow({
-          content: '<div style="padding: 8px;"><h4>欢迎使用AI旅行规划师</h4><p>开始规划您的完美旅程吧！</p></div>',
-          offset: new window.AMap.Pixel(0, -30)
-        });
-        infoWindow.open(mapInstanceRef.current, [116.397428, 39.90923]);
-        
-      } else {
-        console.error('地图初始化失败: 容器或AMap对象不可用');
-        console.log('mapRef.current:', mapRef.current);
-        console.log('window.AMap:', window.AMap);
+      const scheduleIdle = (fn) => {
+        if (typeof window.requestIdleCallback === 'function') {
+          window.requestIdleCallback(fn, { timeout: 1000 });
+        } else {
+          setTimeout(fn, 300);
+        }
+      };
+      // 检查容器元素是否在DOM中
+      const checkContainer = () => {
+        if (mapRef.current && window.AMap) {
+          // 确保容器有尺寸
+          if (mapRef.current.offsetWidth > 0 && mapRef.current.offsetHeight > 0) {
+            console.log('开始初始化地图，容器:', mapRef.current);
+            setMapLoading(true);
+            mapInstanceRef.current = new window.AMap.Map(mapRef.current, {
+              zoom: 11,
+              center: [118.7969, 32.0603], // 南京市中心
+              viewMode: '2D',
+              mapStyle: 'amap://styles/normal',
+            });
+            console.log('地图初始化成功');
+            setMapLoading(false); // 地图初始化完成，停止加载指示
+            
+            // 地图完成后，再延迟加载控件等插件，避免阻塞初始渲染
+            mapInstanceRef.current.on('complete', () => {
+              scheduleIdle(() => {
+                lazyLoadPlugins(['AMap.ToolBar', 'AMap.Scale', 'AMap.OverView'])
+                  .then(() => {
+                    try {
+                      mapInstanceRef.current.addControl(new window.AMap.ToolBar());
+                      mapInstanceRef.current.addControl(new window.AMap.Scale());
+                      mapInstanceRef.current.addControl(new window.AMap.OverView());
+                    } catch (e) {
+                      console.warn('添加控件失败:', e);
+                    }
+                  })
+                  .catch((err) => {
+                    console.warn('控件插件加载失败:', err);
+                  });
+              });
+            });
+            
+            // 设置地图样式为更现代的外观
+            mapInstanceRef.current.setMapStyle('amap://styles/light');
+            
+            // 添加一个默认标记点用于测试
+            const marker = new window.AMap.Marker({
+              position: [118.7969, 32.0603],
+              title: '南京市中心',
+              icon: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b.png',
+              offset: new window.AMap.Pixel(-13, -30)
+            });
+            mapInstanceRef.current.add(marker);
+            
+            // 初始化阶段不打开信息窗，改为按需在交互中创建
+            
+            return true;
+          } else {
+            console.log('地图容器没有尺寸，等待渲染完成');
+            return false;
+          }
+        } else {
+          console.error('地图初始化失败: 容器或AMap对象不可用');
+          console.log('mapRef.current:', mapRef.current);
+          console.log('window.AMap:', window.AMap);
+          return false;
+        }
+      };
+      
+      // 尝试立即初始化
+      if (!checkContainer()) {
+        // 如果容器不可用，等待一段时间再重试
+        setTimeout(() => {
+          if (!checkContainer()) {
+            console.error('地图初始化失败: 容器或AMap对象仍然不可用');
+            setMapLoading(false);
+          }
+        }, 1000);
       }
+      
     } catch (e) {
       console.error('地图初始化错误:', e);
+      setMapLoading(false); // 确保在初始化失败时也更新加载状态
     }
   };
 
@@ -244,6 +269,12 @@ export default function Home() {
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user || null);
+      // 同时保存access_token用于API调用
+      if (session?.access_token) {
+        localStorage.setItem('supabase_access_token', session.access_token);
+      } else {
+        localStorage.removeItem('supabase_access_token');
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -341,25 +372,56 @@ export default function Home() {
   };
 
   const startRecording = async () => {
-    pcmBuffersRef.current = [];
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-    audioCtxRef.current = audioCtx;
-    const source = audioCtx.createMediaStreamSource(stream);
-    sourceNodeRef.current = source;
-    const scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
-    scriptNodeRef.current = scriptNode;
-    scriptNode.onaudioprocess = (e) => {
-      const input = e.inputBuffer.getChannelData(0);
-      const down = downsampleBuffer(input, audioCtx.sampleRate, 16000);
-      const pcm16 = floatTo16BitPCM(down);
-      pcmBuffersRef.current.push(pcm16);
-    };
-    source.connect(scriptNode);
-    scriptNode.connect(audioCtx.destination);
+    try {
+      pcmBuffersRef.current = [];
+      setRecordingTime(0);
+      setIsRecording(true);
+      
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      audioCtxRef.current = audioCtx;
+      const source = audioCtx.createMediaStreamSource(stream);
+      sourceNodeRef.current = source;
+      const scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+      scriptNodeRef.current = scriptNode;
+      scriptNode.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        const down = downsampleBuffer(input, audioCtx.sampleRate, 16000);
+        const pcm16 = floatTo16BitPCM(down);
+        pcmBuffersRef.current.push(pcm16);
+      };
+      source.connect(scriptNode);
+      scriptNode.connect(audioCtx.destination);
+      
+      // 启动计时器，每秒更新一次
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime(prevTime => {
+          const newTime = prevTime + 1;
+          // 如果超过60秒，自动停止录音
+          if (newTime >= 60) {
+            stopRecording();
+            return 60;
+          }
+          return newTime;
+        });
+      }, 1000);
+      
+    } catch (error) {
+      console.error('开始录音失败:', error);
+      setIsRecording(false);
+      setRecordingTime(0);
+    }
   };
 
   const stopRecording = async () => {
+    // 清除计时器
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    
+    setIsRecording(false);
+    
     try {
       if (scriptNodeRef.current) scriptNodeRef.current.disconnect();
       if (sourceNodeRef.current) sourceNodeRef.current.disconnect();
@@ -398,6 +460,13 @@ export default function Home() {
       });
       const data = await res.json();
       setPlan(data);
+      const idle = (fn) => {
+        if (typeof window.requestIdleCallback === 'function') {
+          window.requestIdleCallback(fn, { timeout: 800 });
+        } else {
+          setTimeout(fn, 100);
+        }
+      };
 
       // Render markers on map with time annotations and routes
       if (mapInstanceRef.current && data && Array.isArray(data.pois)) {
@@ -496,60 +565,83 @@ export default function Home() {
             </div>`);
           });
           
-          // Add click event to show detailed info
+          // 点击后先展示骨架，再异步填充详细内容
           marker.on('click', () => {
+            const skeleton = `<div style="padding: 12px; max-width: 280px; border-radius: 12px; background: white; box-shadow: 0 8px 24px rgba(0,0,0,0.15); border: 2px solid ${markerColor};">
+              <h4 style="margin: 0 0 8px 0; color: ${markerColor}; font-size: 16px;">${p.name} ${markerIcon}</h4>
+              ${timeInfo ? `<p style="margin: 0 8px 8px 0; color: #666; font-size: 13px;">🕐 ${timeInfo}</p>` : ''}
+              <div style="color:#999; font-size:12px;">加载中...</div>
+            </div>`;
             const infoWindow = new window.AMap.InfoWindow({
-              content: `<div style="padding: 16px; max-width: 280px; border-radius: 12px; background: white; box-shadow: 0 8px 32px rgba(0,0,0,0.2); border: 2px solid ${markerColor};">
-                <h4 style="margin: 0 0 12px 0; color: ${markerColor}; font-size: 18px;">${p.name}</h4>
-                ${timeInfo ? `<p style="margin: 0 0 10px 0; color: #666; font-size: 14px;"><strong>🕐 时间:</strong> ${timeInfo}</p>` : ''}
-                ${p.description ? `<p style="margin: 0 0 10px 0; color: #666; font-size: 14px; line-height: 1.4;">${p.description}</p>` : ''}
-                ${p.type ? `<p style="margin: 0; color: #888; font-size: 13px;"><strong>📍 类型:</strong> ${p.type}</p>` : ''}
-              </div>`,
+              content: skeleton,
               offset: new window.AMap.Pixel(0, -35),
               closeWhenClickMap: true
             });
             infoWindow.open(mapInstanceRef.current, marker.getPosition());
+            idle(() => {
+              const full = `<div style="padding: 16px; max-width: 280px; border-radius: 12px; background: white; box-shadow: 0 8px 32px rgba(0,0,0,0.2); border: 2px solid ${markerColor};">
+                <h4 style="margin: 0 0 12px 0; color: ${markerColor}; font-size: 18px;">${p.name}</h4>
+                ${timeInfo ? `<p style="margin: 0 0 10px 0; color: #666; font-size: 14px;"><strong>🕐 时间:</strong> ${timeInfo}</p>` : ''}
+                ${p.description ? `<p style="margin: 0 0 10px 0; color: #666; font-size: 14px; line-height: 1.4;">${p.description}</p>` : ''}
+                ${p.type ? `<p style="margin: 0; color: #888; font-size: 13px;"><strong>📍 类型:</strong> ${p.type}</p>` : ''}
+              </div>`;
+              infoWindow.setContent(full);
+            });
           });
           
-          mapInstanceRef.current.add(marker);
           markers.push(marker);
         });
         
-        // Draw route lines between POIs in itinerary order with animation
-        if (data.itinerary && markers.length > 1) {
-          const path = markers.map(marker => marker.getPosition());
-          const polyline = new window.AMap.Polyline({
-            path: path,
-            strokeColor: '#1890ff',
-            strokeWeight: 4,
-            strokeOpacity: 0.8,
-            strokeStyle: 'solid',
-            strokeDasharray: [10, 5],
-            lineJoin: 'round',
-            lineCap: 'round'
-          });
-          mapInstanceRef.current.add(polyline);
-          
-          // Animate the polyline
-          let offset = 0;
-          const animateLine = () => {
-            offset -= 1;
-            if (offset < -15) offset = 0;
-            polyline.setOptions({
-              strokeDasharray: [10, 5],
-              lineDash: offset
+        // 按需加载聚合插件，根据数量决定是否聚合
+        const useCluster = markers.length > 30;
+        if (useCluster) {
+          lazyLoadPlugins(['AMap.MarkerClusterer'])
+            .then(() => {
+              try {
+                new window.AMap.MarkerClusterer(mapInstanceRef.current, markers, { gridSize: 80, minClusterSize: 2 });
+              } catch (e) {
+                console.warn('启用聚合失败:', e);
+                markers.forEach(m => mapInstanceRef.current.add(m));
+              }
+            })
+            .catch((err) => {
+              console.warn('聚合插件加载失败:', err);
+              markers.forEach(m => mapInstanceRef.current.add(m));
             });
-            requestAnimationFrame(animateLine);
-          };
-          animateLine();
-          
-          // Add direction arrows
-          const arrow = new window.AMap.Marker({
-            position: path[Math.floor(path.length / 2)],
-            content: '<div style="color: #1890ff; font-size: 20px;">➡️</div>',
-            offset: new window.AMap.Pixel(-10, -10)
+        } else {
+          markers.forEach(m => mapInstanceRef.current.add(m));
+        }
+        
+        // 延迟绘制路线，降低主线程占用
+        if (data.itinerary && markers.length > 1) {
+          idle(() => {
+            const path = markers.map(marker => marker.getPosition());
+            const polyline = new window.AMap.Polyline({
+              path: path,
+              strokeColor: '#1890ff',
+              strokeWeight: 4,
+              strokeOpacity: 0.8,
+              strokeStyle: 'solid',
+              strokeDasharray: [10, 5],
+              lineJoin: 'round',
+              lineCap: 'round'
+            });
+            mapInstanceRef.current.add(polyline);
+            let offset = 0;
+            const animateLine = () => {
+              offset -= 1;
+              if (offset < -15) offset = 0;
+              polyline.setOptions({ strokeDasharray: [10, 5], lineDash: offset });
+              requestAnimationFrame(animateLine);
+            };
+            animateLine();
+            const arrow = new window.AMap.Marker({
+              position: path[Math.floor(path.length / 2)],
+              content: '<div style="color: #1890ff; font-size: 20px;">➡️</div>',
+              offset: new window.AMap.Pixel(-10, -10)
+            });
+            mapInstanceRef.current.add(arrow);
           });
-          mapInstanceRef.current.add(arrow);
         }
         
         if (data.center) {
@@ -581,11 +673,12 @@ export default function Home() {
     }
     
     try {
+      const accessToken = localStorage.getItem('supabase_access_token');
       const res = await fetch('/api/trips', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.id}`
+          'Authorization': accessToken ? `Bearer ${accessToken}` : ''
         },
         body: JSON.stringify({ 
           plan, 
@@ -607,24 +700,6 @@ export default function Home() {
       alert('保存失败，请稍后重试');
     }
   };
-
-  const loadSavedTrips = useCallback(async () => {
-    try {
-      const resList = await fetch('/api/trips', {
-        headers: user ? { 'Authorization': `Bearer ${user.id}` } : {}
-      });
-      const list = await resList.json();
-      // Filter trips by current user if authenticated
-      if (user && Array.isArray(list)) {
-        setSavedTrips(list.filter(trip => trip.user_id === user.id));
-      } else {
-        setSavedTrips(list);
-      }
-    } catch (error) {
-      console.error('加载行程失败:', error);
-      setSavedTrips([]);
-    }
-  }, [user]);
 
   // 加载已保存的行程
   const loadTrip = async (trip) => {
@@ -706,43 +781,85 @@ export default function Home() {
             offset: new window.AMap.Pixel(-25, -25)
           });
           
-          // 添加点击事件显示详细信息
+          // 信息窗分步渲染：先骨架，再填充详情
           marker.on('click', () => {
-            const infoWindow = new window.AMap.InfoWindow({
-              content: `<div style="padding: 12px; max-width: 250px;">
-                <h4 style="margin: 0 0 8px 0; color: #1890ff;">${p.name}</h4>
-                ${timeInfo ? `<p style="margin: 0 0 8px 0; color: #666;"><strong>时间:</strong> ${timeInfo}</p>` : ''}
-                ${p.description ? `<p style="margin: 0 0 8px 0; color: #666;">${p.description}</p>` : ''}
-                ${p.type ? `<p style="margin: 0; color: #888;"><strong>类型:</strong> ${p.type}</p>` : ''}
-              </div>`,
-              offset: new window.AMap.Pixel(0, -30)
-            });
+            const skeleton = `<div style="padding: 12px; max-width: 250px;">
+              <h4 style="margin: 0 0 8px 0; color: ${markerColor};">${p.name}</h4>
+              ${timeInfo ? `<p style=\"margin: 0 0 8px 0; color: #666;\"><strong>时间:</strong> ${timeInfo}</p>` : ''}
+              <div style="color:#999; font-size:12px;">加载中...</div>
+            </div>`;
+            const infoWindow = new window.AMap.InfoWindow({ content: skeleton, offset: new window.AMap.Pixel(0, -30) });
             infoWindow.open(mapInstanceRef.current, marker.getPosition());
+            if (typeof window.requestIdleCallback === 'function') {
+              window.requestIdleCallback(() => {
+                const full = `<div style="padding: 12px; max-width: 250px;">
+                  <h4 style="margin: 0 0 8px 0; color: ${markerColor};">${p.name}</h4>
+                  ${timeInfo ? `<p style=\"margin: 0 0 8px 0; color: #666;\"><strong>时间:</strong> ${timeInfo}</p>` : ''}
+                  ${p.description ? `<p style=\"margin: 0 0 8px 0; color: #666;\">${p.description}</p>` : ''}
+                  ${p.type ? `<p style=\"margin: 0; color: #888;\"><strong>类型:</strong> ${p.type}</p>` : ''}
+                </div>`;
+                infoWindow.setContent(full);
+              }, { timeout: 1000 });
+            } else {
+              setTimeout(() => {
+                const full = `<div style="padding: 12px; max-width: 250px;">
+                  <h4 style="margin: 0 0 8px 0; color: ${markerColor};">${p.name}</h4>
+                  ${timeInfo ? `<p style=\"margin: 0 0 8px 0; color: #666;\"><strong>时间:</strong> ${timeInfo}</p>` : ''}
+                  ${p.description ? `<p style=\"margin: 0 0 8px 0; color: #666;\">${p.description}</p>` : ''}
+                  ${p.type ? `<p style=\"margin: 0; color: #888;\"><strong>类型:</strong> ${p.type}</p>` : ''}
+                </div>`;
+                infoWindow.setContent(full);
+              }, 100);
+            }
           });
           
-          mapInstanceRef.current.add(marker);
           markers.push(marker);
         });
         
-        // 绘制路线
+        // 按需加载聚合
+        const useCluster = markers.length > 30;
+        if (useCluster) {
+          lazyLoadPlugins(['AMap.MarkerClusterer'])
+            .then(() => {
+              try {
+                new window.AMap.MarkerClusterer(mapInstanceRef.current, markers, { gridSize: 80, minClusterSize: 2 });
+              } catch (e) {
+                console.warn('启用聚合失败:', e);
+                markers.forEach(m => mapInstanceRef.current.add(m));
+              }
+            })
+            .catch((err) => {
+              console.warn('聚合插件加载失败:', err);
+              markers.forEach(m => mapInstanceRef.current.add(m));
+            });
+        } else {
+          markers.forEach(m => mapInstanceRef.current.add(m));
+        }
+        
+        // 延迟绘制路线
         if (trip.plan.itinerary && markers.length > 1) {
-          const path = markers.map(marker => marker.getPosition());
-          const polyline = new window.AMap.Polyline({
-            path: path,
-            strokeColor: '#1890ff',
-            strokeWeight: 3,
-            strokeOpacity: 0.6,
-            strokeStyle: 'solid'
-          });
-          mapInstanceRef.current.add(polyline);
-          
-          // 添加方向箭头
-          const arrow = new window.AMap.Marker({
-            position: path[Math.floor(path.length / 2)],
-            content: '<div style="color: #1890ff; font-size: 20px;">➡️</div>',
-            offset: new window.AMap.Pixel(-10, -10)
-          });
-          mapInstanceRef.current.add(arrow);
+          const drawRoute = () => {
+            const path = markers.map(marker => marker.getPosition());
+            const polyline = new window.AMap.Polyline({
+              path: path,
+              strokeColor: '#1890ff',
+              strokeWeight: 3,
+              strokeOpacity: 0.6,
+              strokeStyle: 'solid'
+            });
+            mapInstanceRef.current.add(polyline);
+            const arrow = new window.AMap.Marker({
+              position: path[Math.floor(path.length / 2)],
+              content: '<div style="color: #1890ff; font-size: 20px;">➡️</div>',
+              offset: new window.AMap.Pixel(-10, -10)
+            });
+            mapInstanceRef.current.add(arrow);
+          };
+          if (typeof window.requestIdleCallback === 'function') {
+            window.requestIdleCallback(drawRoute, { timeout: 800 });
+          } else {
+            setTimeout(drawRoute, 100);
+          }
         }
         
         // 设置地图中心点和缩放级别
@@ -769,10 +886,11 @@ export default function Home() {
     }
     
     try {
+      const accessToken = localStorage.getItem('supabase_access_token');
       const res = await fetch(`/api/trips?id=${tripId}`, {
         method: 'DELETE',
         headers: { 
-          'Authorization': `Bearer ${user.id}`
+          'Authorization': `Bearer ${accessToken}`
         }
       });
       
@@ -790,7 +908,17 @@ export default function Home() {
   };
 
   useEffect(() => {
-    loadSavedTrips();
+    if (user) {
+      loadSavedTrips()
+        .then(data => {
+          if (data) {
+            setSavedTrips(data);
+          }
+        })
+        .catch(error => {
+          console.error("加载行程失败:", error);
+        });
+    }
   }, [user]);
 
   // 当识别文本手动编辑或更新时，也自动尝试填充
@@ -866,8 +994,31 @@ export default function Home() {
                   placeholder="例如：我想去日本，5天，预算1万元，喜欢美食和动漫，带孩子" 
                 />
                 <div className="voice-controls">
-                  <button className="btn btn-secondary" onClick={startRecording}>🎤 开始语音</button>
-                  <button className="btn btn-secondary" onClick={stopRecording}>⏹️ 停止语音</button>
+                  <button 
+                    className={`btn btn-secondary ${isRecording ? 'recording' : ''}`} 
+                    onClick={startRecording}
+                    disabled={isRecording}
+                  >
+                    🎤 {isRecording ? '录音中...' : '开始语音'}
+                  </button>
+                  <button 
+                    className="btn btn-secondary" 
+                    onClick={stopRecording}
+                    disabled={!isRecording}
+                  >
+                    ⏹️ 停止语音
+                  </button>
+                  {isRecording && (
+                    <div className="recording-timer">
+                      <span className="timer-text">⏱️ {recordingTime}秒</span>
+                      <div className="timer-progress">
+                        <div 
+                          className="timer-progress-bar" 
+                          style={{ width: `${(recordingTime / 60) * 100}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -980,14 +1131,15 @@ export default function Home() {
                 </div>
               )}
 
-              {mapLoading ? (
-                <div className="map-loading">
-                  <div className="loading-spinner"></div>
-                  <span>地图加载中...</span>
-                </div>
-              ) : (
-                <div ref={mapRef} className="map map-container" />
-              )}
+              {/* 始终渲染地图容器，加载时覆盖展示 */}
+              <div ref={mapRef} className="map map-container">
+                {mapLoading && (
+                  <div className="map-overlay">
+                    <div className="loading-spinner"></div>
+                    <span>地图加载中...</span>
+                  </div>
+                )}
+              </div>
 
               {!!savedTrips?.length && (
                 <div className="card saved-trips-card">

@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import jwt from 'jsonwebtoken';
 
 let memoryStore = [];
 
@@ -25,8 +26,20 @@ function getAuthenticatedSupabase(jwtToken) {
 export default async function handler(req, res) {
   const supabase = getSupabase();
   
-  // Extract user ID from authorization header
-  const userId = req.headers.authorization?.replace('Bearer ', '');
+  // Extract JWT token from authorization header
+  const authToken = req.headers.authorization?.replace('Bearer ', '');
+  let userId = null;
+  
+  // Try to extract user ID from JWT token
+  if (authToken) {
+    try {
+      // Decode the JWT token to get user ID from sub claim
+      const decoded = jwt.decode(authToken);
+      userId = decoded?.sub;
+    } catch (error) {
+      console.error('JWT decode error:', error);
+    }
+  }
   
   if (req.method === 'GET') {
     if (supabase && userId) {

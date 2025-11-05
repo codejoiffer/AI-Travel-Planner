@@ -577,6 +577,22 @@ function MyApp({ Component, pageProps }) {
           box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
           border: 2px solid rgba(255, 255, 255, 0.3);
           margin-bottom: 24px;
+          position: relative; /* 支持覆盖层 */
+        }
+
+        /* 地图加载覆盖层 */
+        .map-overlay {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: linear-gradient(135deg, rgba(102, 126, 234, 0.9) 0%, rgba(118, 75, 162, 0.9) 100%);
+          color: white;
+          font-size: 18px;
+          font-weight: 600;
+          z-index: 10;
+          pointer-events: none;
         }
         
         /* 地图标记样式 */
@@ -704,4 +720,3 @@ function MyApp({ Component, pageProps }) {
 }
 
 export default MyApp;
-
