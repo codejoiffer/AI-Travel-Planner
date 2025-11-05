@@ -1,0 +1,27 @@
+name: Docker CI
+on:
+  push:
+    branches: [ main ]
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run build
+      - name: Login to ACR
+        if: ${{ secrets.ACR_REGISTRY && secrets.ACR_USERNAME && secrets.ACR_PASSWORD }}
+        run: |
+          echo ${{ secrets.ACR_PASSWORD }} | docker login ${{ secrets.ACR_REGISTRY }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
+      - name: Build image
+        run: |
+          docker build -t ${{ github.repository }}:${{ github.sha }} .
+      - name: Push to ACR
+        if: ${{ secrets.ACR_REGISTRY && secrets.ACR_NAMESPACE }}
+        run: |
+          docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.sha }}
+          docker push ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.sha }}
+
