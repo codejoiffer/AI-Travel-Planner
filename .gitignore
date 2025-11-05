@@ -9,3 +9,4 @@ coverage/
 *.log
 
 test-map-key.js
+api.md
