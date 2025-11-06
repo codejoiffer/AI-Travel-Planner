@@ -5,7 +5,12 @@ let memoryStore = [];
 
 function getSupabase() {
   if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
-    return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+    try {
+      return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+    } catch (error) {
+      console.error('Supabase客户端创建失败:', error.message);
+      return null;
+    }
   }
   return null;
 }
@@ -25,6 +30,11 @@ function getAuthenticatedSupabase(jwtToken) {
 
 export default async function handler(req, res) {
   const supabase = getSupabase();
+  
+  // 如果Supabase客户端创建失败，直接使用内存存储
+  if (!supabase) {
+    console.log('使用内存存储模式');
+  }
   
   // Extract JWT token from authorization header
   const authToken = req.headers.authorization?.replace('Bearer ', '');

@@ -1,10 +1,23 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import Link from 'next/link';
+import HeaderBar from '../components/HeaderBar';
+import AuthModal from '../components/AuthModal';
+import WelcomeSection from '../components/WelcomeSection';
+import MapPanel from '../components/MapPanel';
+import VoiceInputCard from '../components/VoiceInputCard';
+import PlanSettingsCard from '../components/PlanSettingsCard';
+import PlanResults from '../components/PlanResults';
+import BudgetSummaryCard from '../components/BudgetSummaryCard';
+import ExpensesListCard from '../components/ExpensesListCard';
+import SavedTripsCard from '../components/SavedTripsCard';
+import { useRouter } from 'next/router';
 import { createClient } from '@supabase/supabase-js';
 import { loadSavedTrips } from '../utils/trips';
 import { loadAMap, lazyLoadPlugins } from '../utils/amap';
 
 export default function Home() {
   console.log('Home component rendered');
+  const router = useRouter();
   const [destination, setDestination] = useState('南京');
   const [days, setDays] = useState(5);
   const [budget, setBudget] = useState(10000);
@@ -20,6 +33,9 @@ export default function Home() {
   const [authMode, setAuthMode] = useState('login');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [activeTripId, setActiveTripId] = useState(null); // 当前行程ID（用于费用云同步）
+  const [expenses, setExpenses] = useState([]); // 费用记录列表
+  const [expenseDraft, setExpenseDraft] = useState({ amount: '', category: 'other', description: '', day: '', time: '' });
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const audioCtxRef = useRef(null);
@@ -27,11 +43,21 @@ export default function Home() {
   const sourceNodeRef = useRef(null);
   const pcmBuffersRef = useRef([]);
   const [savedTrips, setSavedTrips] = useState([]);
+  const [autoLoadedFromQuery, setAutoLoadedFromQuery] = useState(false);
   const [expandedActivity, setExpandedActivity] = useState(null); // 存储展开的活动 {day: number, time: string}
   const [mapLoading, setMapLoading] = useState(true); // 地图加载状态
   const [recordingTime, setRecordingTime] = useState(0); // 录音计时
   const [isRecording, setIsRecording] = useState(false); // 录音状态
   const recordingTimerRef = useRef(null); // 录音计时器引用
+  const [currentStep, setCurrentStep] = useState(1); // 递进式步骤：1语音→2设置→3结果→4预算→5费用→6保存
+
+  // 路线相关状态与引用
+  const [routeMode, setRouteMode] = useState('driving'); // driving|walking|transit
+  const [showDailyRoutes, setShowDailyRoutes] = useState(true);
+  const [selectedDay, setSelectedDay] = useState(null);
+  const dailyPolylinesRef = useRef([]); // [{day, polyline, arrow}]
+  const markerMapRef = useRef(new Map()); // 名称 -> Marker 映射
+  const routePalette = ['#1890ff', '#52c41a', '#fa8c16', '#eb2f96', '#13c2c2', '#722ed1'];
 
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL || '',
@@ -143,6 +169,292 @@ export default function Home() {
     }
   };
 
+  // 从语音/文本中提取消费记录
+  const parseSpeechToExpense = (text) => {
+    if (!text || typeof text !== 'string') return null;
+    try {
+      const t = text.trim();
+      // 金额匹配: "200元"、"消费200"、中文数字+单位
+      let amount;
+      let am = t.match(/(\d+(?:\.\d+)?)\s*元/);
+      if (!am) am = t.match(/([一二三四五六七八九十两]+)\s*([万千百])?\s*元/);
+      if (!am) am = t.match(/(?:消费|花费|花了|花掉)(\d+(?:\.\d+)?)/);
+      if (am) {
+        const valStr = am[1];
+        const unit = am[2] || '';
+        const num = /^\d/.test(valStr) ? parseFloat(valStr) : chineseNumberToInt(valStr);
+        if (!isNaN(num)) amount = Math.round(num * unitToMultiplier(unit));
+      }
+
+      // 类别推断
+      let category = 'other';
+      if (/(餐|吃|美食|晚餐|午餐|早餐|酒|咖啡|奶茶)/.test(t)) category = 'food';
+      else if (/(住|酒店|宾馆|民宿|住宿)/.test(t)) category = 'accommodation';
+      else if (/(地铁|公交|打车|出租|交通|火车|高铁|飞机|机票)/.test(t)) category = 'transport';
+      else if (/(门票|票|入场|景点)/.test(t)) category = 'tickets';
+
+      // 描述
+      let description = '';
+      const descMatch = t.match(/(?:在|于)?(.{0,20})(餐厅|酒店|地铁|公交|景点|门票|机票|民宿|咖啡|奶茶)(.{0,20})/);
+      if (descMatch) description = `${descMatch[1] || ''}${descMatch[2]}${descMatch[3] || ''}`.trim();
+
+      // 天数/时间
+      let day = null;
+      const dm1 = t.match(/第\s*(\d+)\s*天/);
+      if (dm1) day = parseInt(dm1[1], 10);
+      if (!day) {
+        const dm2 = t.match(/第\s*([一二三四五六七八九十两]+)\s*天/);
+        if (dm2) day = chineseNumberToInt(dm2[1]);
+      }
+      let time = '';
+      const tm = t.match(/(上午|下午|晚上|中午|早上|傍晚)/);
+      if (tm) time = tm[1];
+
+      if (amount && Number.isFinite(amount)) {
+        return { amount, category, description, day, time };
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  // ---- Route helpers ----
+  const parsePolylineString = (polylineStr) => {
+    if (!polylineStr || typeof polylineStr !== 'string') return [];
+    return polylineStr.split(';')
+      .map(pair => pair.split(',').map(Number))
+      .filter(arr => arr.length === 2 && Number.isFinite(arr[0]) && Number.isFinite(arr[1]));
+  };
+
+  const extractPointsFromDirection = (mode, directionData) => {
+    if (!directionData) return [];
+    try {
+      if (mode === 'driving' || mode === 'walking') {
+        const paths = directionData?.route?.paths || [];
+        const first = paths[0];
+        if (!first) return [];
+        const steps = first.steps || [];
+        const points = [];
+        steps.forEach(step => {
+          const seg = parsePolylineString(step.polyline);
+          seg.forEach(pt => points.push(pt));
+        });
+        return points;
+      }
+      if (mode === 'transit') {
+        const transits = directionData?.route?.transits || [];
+        const best = transits[0];
+        if (!best) return [];
+        const points = [];
+        const segments = best.segments || [];
+        segments.forEach(seg => {
+          if (seg.walking?.steps?.length) {
+            seg.walking.steps.forEach(step => {
+              const segPts = parsePolylineString(step.polyline);
+              segPts.forEach(pt => points.push(pt));
+            });
+          }
+          if (seg.bus?.buslines?.length) {
+            seg.bus.buslines.forEach(line => {
+              const segPts = parsePolylineString(line.polyline);
+              segPts.forEach(pt => points.push(pt));
+            });
+          }
+        });
+        return points;
+      }
+      return [];
+    } catch (e) {
+      console.warn('extractPointsFromDirection 解析失败:', e);
+      return [];
+    }
+  };
+
+  // 根据显示开关控制路线显隐
+  useEffect(() => {
+    try {
+      const list = dailyPolylinesRef.current || [];
+      list.forEach(({ polyline, arrow }) => {
+        if (!polyline || !polyline.hide || !polyline.show) return;
+        if (showDailyRoutes) {
+          polyline.show();
+          if (arrow?.show) arrow.show();
+        } else {
+          polyline.hide();
+          if (arrow?.hide) arrow.hide();
+        }
+      });
+    } catch (e) {
+      // ignore
+    }
+  }, [showDailyRoutes]);
+
+  const highlightDay = (dayNum) => {
+    setSelectedDay(dayNum);
+    try {
+      const list = dailyPolylinesRef.current || [];
+      list.forEach(({ day, polyline }) => {
+        if (!polyline) return;
+        const isTarget = day === dayNum;
+        polyline.setOptions({
+          strokeWeight: isTarget ? 7 : 5,
+          strokeOpacity: isTarget ? 1.0 : 0.9,
+          zIndex: isTarget ? 1000 : 900,
+        });
+      });
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  // 切换路线模式时，基于现有标记与行程数据重绘路线
+  useEffect(() => {
+    try {
+      if (!mapInstanceRef.current) return;
+      if (!plan?.itinerary || !Array.isArray(plan.itinerary) || plan.itinerary.length === 0) return;
+      const nameToMarker = markerMapRef.current;
+      if (!nameToMarker || nameToMarker.size === 0) return;
+      // 当标注匹配失败时，回退用 POI 名称匹配取坐标
+      const findPoiForItem = (item) => {
+        if (!plan?.pois || !Array.isArray(plan.pois)) return null;
+        const keys = [];
+        if (item?.location) keys.push(item.location);
+        if (item?.title) keys.push(item.title);
+        for (const k of keys) {
+          if (!k) continue;
+          const kb = (k || '').toLowerCase();
+          for (const p of plan.pois) {
+            const pa = (p?.name || '').toLowerCase();
+            if (!pa || !kb) continue;
+            if (pa.includes(kb) || kb.includes(pa)) return p;
+          }
+        }
+        return null;
+      };
+
+      const redraw = async () => {
+        try {
+          // 移除已有的每日路线覆盖物
+          const existing = dailyPolylinesRef.current || [];
+          existing.forEach(({ polyline, arrow }) => {
+            try { mapInstanceRef.current.remove(polyline); } catch {}
+            try { if (arrow) mapInstanceRef.current.remove(arrow); } catch {}
+          });
+          dailyPolylinesRef.current = [];
+
+          const toArr = (pos) => Array.isArray(pos) ? pos : [pos?.lng ?? pos?.getLng?.(), pos?.lat ?? pos?.getLat?.()];
+          const findMarkerForItem = (item) => {
+            const keys = [];
+            if (item && item.location) keys.push(item.location);
+            if (item && item.title) keys.push(item.title);
+            for (const k of keys) {
+              if (k && nameToMarker.has(k)) return nameToMarker.get(k);
+            }
+            for (const [poiName, mk] of nameToMarker.entries()) {
+              for (const k of keys) {
+                if (!k) continue;
+                const a = (poiName || '').toLowerCase();
+                const b = (k || '').toLowerCase();
+                if (!a || !b) continue;
+                if (a.includes(b) || b.includes(a)) return mk;
+              }
+            }
+            return null;
+          };
+
+          for (let i = 0; i < plan.itinerary.length; i++) {
+            const day = plan.itinerary[i];
+            const positions = [];
+            for (const it of day.items) {
+              const mk = findMarkerForItem(it);
+              let pos = null;
+              if (mk) {
+                pos = mk.getPosition();
+              } else {
+                const poi = findPoiForItem(it);
+                if (poi && typeof poi.lng === 'number' && typeof poi.lat === 'number') {
+                  pos = [poi.lng, poi.lat];
+                }
+              }
+              if (pos) {
+                const last = positions[positions.length - 1];
+                const lp = last ? (Array.isArray(last) ? last : [last?.lng ?? last?.getLng?.(), last?.lat ?? last?.getLat?.()]) : null;
+                const pp = Array.isArray(pos) ? pos : [pos?.lng ?? pos?.getLng?.(), pos?.lat ?? pos?.getLat?.()];
+                if (!lp || lp[0] !== pp[0] || lp[1] !== pp[1]) {
+                  positions.push(pos);
+                }
+              }
+            }
+            if (positions.length > 1) {
+              const color = routePalette[i % routePalette.length];
+              const routePoints = [];
+              for (let k = 1; k < positions.length; k++) {
+                const [lng1, lat1] = toArr(positions[k - 1]);
+                const [lng2, lat2] = toArr(positions[k]);
+                const origin = `${lng1},${lat1}`;
+                const destinationStr = `${lng2},${lat2}`;
+                const endpoint = routeMode === 'walking' ? 'directionWalking' : (routeMode === 'transit' ? 'directionTransit' : 'directionDriving');
+                const qs = new URLSearchParams({ origin, destination: destinationStr, ...(routeMode === 'transit' ? { city: destination } : {}) }).toString();
+                try {
+                  const resp = await fetch(`/api/amap/${endpoint}?${qs}`);
+                  const json = await resp.json();
+                  if (json.ok) {
+                    const segPts = extractPointsFromDirection(routeMode, json.data);
+                    if (segPts && segPts.length) {
+                      segPts.forEach(pt => routePoints.push(pt));
+                    } else {
+                      routePoints.push([lng1, lat1], [lng2, lat2]);
+                    }
+                  } else {
+                    routePoints.push([lng1, lat1], [lng2, lat2]);
+                  }
+                } catch (e) {
+                  console.warn('路径规划失败，使用直线段作为退化:', e);
+                  routePoints.push([lng1, lat1], [lng2, lat2]);
+                }
+              }
+              const finalPoints = routePoints.length > 1 
+                ? routePoints 
+                : [toArr(positions[0]), toArr(positions[positions.length - 1])];
+              if (finalPoints.length > 1) {
+                const polyline = new window.AMap.Polyline({
+                  path: finalPoints,
+                  strokeColor: color,
+                  strokeWeight: 5,
+                  strokeOpacity: 0.9,
+                  strokeStyle: 'solid',
+                  lineJoin: 'round',
+                  lineCap: 'round',
+                  zIndex: 999
+                });
+                mapInstanceRef.current.add(polyline);
+                const mid = finalPoints[Math.floor(finalPoints.length / 2)];
+                const arrow = new window.AMap.Marker({
+                  position: mid,
+                  content: `<div style="color: ${color}; font-size: 18px;">➡️ 第${day.day}天</div>`,
+                  offset: new window.AMap.Pixel(-10, -10)
+                });
+                mapInstanceRef.current.add(arrow);
+                dailyPolylinesRef.current.push({ day: day.day, polyline, arrow });
+              }
+            }
+          }
+          if (selectedDay) highlightDay(selectedDay);
+        } catch (e) {
+          console.warn('重绘路线失败:', e);
+        }
+      };
+      if (typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(redraw, { timeout: 800 });
+      } else {
+        setTimeout(redraw, 100);
+      }
+    } catch (e) {
+      // ignore
+    }
+  }, [routeMode, plan, destination]);
+
   // Load Gaode Maps via official loader
   useEffect(() => {
     const key = process.env.NEXT_PUBLIC_MAPS_API_KEY;
@@ -162,8 +474,12 @@ export default function Home() {
     setMapLoading(true);
     loadAMap()
       .then(() => {
-        if (!cancelled && mapRef.current && !mapInstanceRef.current) {
+        // 无论容器是否已经就绪，都触发初始化；初始化内部会自行检查并重试
+        if (!cancelled && !mapInstanceRef.current) {
           initializeMap();
+        } else if (!cancelled && mapInstanceRef.current) {
+          // 已有实例，确保取消加载状态
+          setMapLoading(false);
         }
       })
       .catch((err) => {
@@ -179,6 +495,11 @@ export default function Home() {
   // 初始化地图函数
   const initializeMap = () => {
     try {
+      // 若地图已存在，直接结束加载状态
+      if (mapInstanceRef.current) {
+        setMapLoading(false);
+        return;
+      }
       const scheduleIdle = (fn) => {
         if (typeof window.requestIdleCallback === 'function') {
           window.requestIdleCallback(fn, { timeout: 1000 });
@@ -205,12 +526,21 @@ export default function Home() {
             // 地图完成后，再延迟加载控件等插件，避免阻塞初始渲染
             mapInstanceRef.current.on('complete', () => {
               scheduleIdle(() => {
-                lazyLoadPlugins(['AMap.ToolBar', 'AMap.Scale', 'AMap.OverView'])
+                // 先只加载必要的控件，避免资源不足错误
+                  lazyLoadPlugins(['AMap.ToolBar'])
                   .then(() => {
                     try {
                       mapInstanceRef.current.addControl(new window.AMap.ToolBar());
-                      mapInstanceRef.current.addControl(new window.AMap.Scale());
-                      mapInstanceRef.current.addControl(new window.AMap.OverView());
+                      // 其他控件按需延迟加载
+                      setTimeout(() => {
+                        lazyLoadPlugins(['AMap.Scale'])
+                          .then(() => {
+                            mapInstanceRef.current.addControl(new window.AMap.Scale());
+                          })
+                          .catch(() => {
+                            console.warn('Scale控件加载失败');
+                          });
+                      }, 1000);
                     } catch (e) {
                       console.warn('添加控件失败:', e);
                     }
@@ -224,16 +554,7 @@ export default function Home() {
             // 设置地图样式为更现代的外观
             mapInstanceRef.current.setMapStyle('amap://styles/light');
             
-            // 添加一个默认标记点用于测试
-            const marker = new window.AMap.Marker({
-              position: [118.7969, 32.0603],
-              title: '南京市中心',
-              icon: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b.png',
-              offset: new window.AMap.Pixel(-13, -30)
-            });
-            mapInstanceRef.current.add(marker);
-            
-            // 初始化阶段不打开信息窗，改为按需在交互中创建
+            // 初始化阶段不添加任何硬编码标注，标注将基于后端 API 返回的 POI 数据动态创建
             
             return true;
           } else {
@@ -263,6 +584,25 @@ export default function Home() {
       console.error('地图初始化错误:', e);
       setMapLoading(false); // 确保在初始化失败时也更新加载状态
     }
+  };
+
+  // 信息窗更新调度：即便 requestIdleCallback 不触发也保证更新
+  const scheduleInfoWindowUpdate = (fn) => {
+    let done = false;
+    const run = () => {
+      if (done) return;
+      done = true;
+      try { fn(); } catch (e) { console.warn('InfoWindow 更新失败:', e); }
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      try {
+        window.requestIdleCallback(run, { timeout: 800 });
+      } catch {
+        // ignore
+      }
+    }
+    // 保底：200ms 后强制执行一次
+    setTimeout(run, 200);
   };
 
   // Check user authentication status
@@ -322,23 +662,29 @@ export default function Home() {
   };
 
   const handleSignOut = async () => {
-    console.log('退出按钮被点击');
     try {
-      console.log('开始退出登录...');
-      const result = await supabase.auth.signOut();
-      console.log('退出登录结果:', result);
-      setUser(null);
-      console.log('用户状态已设置为null');
-      
-      // 检查localStorage中的认证状态
-      const authState = localStorage.getItem('sb-cnchlpalunuslihbtvzr-auth-token');
-      console.log('LocalStorage认证状态:', authState);
-      
-      // 强制刷新页面以确保状态更新
-      window.location.reload();
-    } catch (error) {
-      console.error('Sign out error:', error.message);
+      await supabase.auth.signOut({ scope: 'global' });
+    } catch (e) {
+      console.warn('Supabase signOut 失败或不支持 scope 参数，继续清理本地状态:', e?.message || e);
     }
+
+    try {
+      // 清除应用内使用的访问令牌
+      localStorage.removeItem('supabase_access_token');
+      // 清除所有 Supabase 会话相关键（以 sb- 开头）
+      const keys = Object.keys(localStorage);
+      keys.forEach((k) => {
+        if (k.startsWith('sb-')) localStorage.removeItem(k);
+      });
+    } catch (e) {
+      console.warn('清理本地存储时出错:', e?.message || e);
+    }
+
+    // 重置本地状态并回到未登录视图
+    setUser(null);
+    setSavedTrips([]);
+    setActiveTripId(null);
+    setExpenses([]);
   };
 
   const downsampleBuffer = (buffer, sampleRate, outRate = 16000) => {
@@ -447,6 +793,16 @@ export default function Home() {
     // 自动根据识别文本填充表单（如果识别到了字段）
     if (data && data.text) {
       parseSpeechToForm(data.text);
+      const exp = parseSpeechToExpense(data.text);
+      if (exp) {
+        setExpenseDraft(prev => ({
+          amount: String(exp.amount),
+          category: exp.category,
+          description: exp.description || prev.description,
+          day: exp.day ? String(exp.day) : prev.day,
+          time: exp.time || prev.time,
+        }));
+      }
     }
   };
 
@@ -468,13 +824,39 @@ export default function Home() {
         }
       };
 
+      // 确保地图实例已经初始化，如果没有则等待初始化完成
+      const waitForMapInitialization = () => {
+        return new Promise((resolve) => {
+          if (mapInstanceRef.current) {
+            resolve(true);
+          } else {
+            // 等待地图初始化完成
+            const checkInterval = setInterval(() => {
+              if (mapInstanceRef.current) {
+                clearInterval(checkInterval);
+                resolve(true);
+              }
+            }, 100);
+            // 超时保护
+            setTimeout(() => {
+              clearInterval(checkInterval);
+              resolve(false);
+            }, 5000);
+          }
+        });
+      };
+
+      // 等待地图实例初始化完成
+      const mapReady = await waitForMapInitialization();
+      
       // Render markers on map with time annotations and routes
-      if (mapInstanceRef.current && data && Array.isArray(data.pois)) {
+      if (mapReady && mapInstanceRef.current && data && Array.isArray(data.pois)) {
         // Clear existing markers and polylines
         mapInstanceRef.current.clearMap();
         
         // Create markers with time information
         const markers = [];
+        const nameToMarker = new Map();
         data.pois.forEach(p => {
           // Find when this POI appears in the itinerary using exact matching
           let timeInfo = '';
@@ -578,7 +960,7 @@ export default function Home() {
               closeWhenClickMap: true
             });
             infoWindow.open(mapInstanceRef.current, marker.getPosition());
-            idle(() => {
+            scheduleInfoWindowUpdate(() => {
               const full = `<div style="padding: 16px; max-width: 280px; border-radius: 12px; background: white; box-shadow: 0 8px 32px rgba(0,0,0,0.2); border: 2px solid ${markerColor};">
                 <h4 style="margin: 0 0 12px 0; color: ${markerColor}; font-size: 18px;">${p.name}</h4>
                 ${timeInfo ? `<p style="margin: 0 0 10px 0; color: #666; font-size: 14px;"><strong>🕐 时间:</strong> ${timeInfo}</p>` : ''}
@@ -590,6 +972,9 @@ export default function Home() {
           });
           
           markers.push(marker);
+          if (p.name) {
+            try { nameToMarker.set(p.name, marker); } catch {}
+          }
         });
         
         // 按需加载聚合插件，根据数量决定是否聚合
@@ -611,36 +996,142 @@ export default function Home() {
         } else {
           markers.forEach(m => mapInstanceRef.current.add(m));
         }
+        // 保存标记映射供后续重绘路线
+        markerMapRef.current = nameToMarker;
+        // 保存最新的标记映射，便于模式切换或显隐时重绘路线
+        markerMapRef.current = nameToMarker;
         
-        // 延迟绘制路线，降低主线程占用
+        // 延迟按“每日行程”绘制路线，降低主线程占用
         if (data.itinerary && markers.length > 1) {
           idle(() => {
-            const path = markers.map(marker => marker.getPosition());
-            const polyline = new window.AMap.Polyline({
-              path: path,
-              strokeColor: '#1890ff',
-              strokeWeight: 4,
-              strokeOpacity: 0.8,
-              strokeStyle: 'solid',
-              strokeDasharray: [10, 5],
-              lineJoin: 'round',
-              lineCap: 'round'
-            });
-            mapInstanceRef.current.add(polyline);
-            let offset = 0;
-            const animateLine = () => {
-              offset -= 1;
-              if (offset < -15) offset = 0;
-              polyline.setOptions({ strokeDasharray: [10, 5], lineDash: offset });
-              requestAnimationFrame(animateLine);
-            };
-            animateLine();
-            const arrow = new window.AMap.Marker({
-              position: path[Math.floor(path.length / 2)],
-              content: '<div style="color: #1890ff; font-size: 20px;">➡️</div>',
-              offset: new window.AMap.Pixel(-10, -10)
-            });
-            mapInstanceRef.current.add(arrow);
+            try {
+              const palette = ['#1890ff', '#52c41a', '#fa8c16', '#eb2f96', '#13c2c2', '#722ed1'];
+              const findMarkerForItem = (item) => {
+                const keys = [];
+                if (item && item.location) keys.push(item.location);
+                if (item && item.title) keys.push(item.title);
+                for (const k of keys) {
+                  if (k && nameToMarker.has(k)) return nameToMarker.get(k);
+                }
+                // 退化为模糊匹配
+                for (const [poiName, mk] of nameToMarker.entries()) {
+                  for (const k of keys) {
+                    if (!k) continue;
+                    const a = (poiName || '').toLowerCase();
+                    const b = (k || '').toLowerCase();
+                    if (!a || !b) continue;
+                    if (a.includes(b) || b.includes(a)) return mk;
+                  }
+                }
+                return null;
+              };
+              // 标注找不到时，基于 POI 名称回退匹配坐标
+              const findPoiForItem = (item) => {
+                const keys = [];
+                if (item?.location) keys.push(item.location);
+                if (item?.title) keys.push(item.title);
+                for (const k of keys) {
+                  if (!k) continue;
+                  const kb = (k || '').toLowerCase();
+                  for (const p of (data.pois || [])) {
+                    const pa = (p?.name || '').toLowerCase();
+                    if (!pa || !kb) continue;
+                    if (pa.includes(kb) || kb.includes(pa)) return p;
+                  }
+                }
+                return null;
+              };
+
+              const toArr = (pos) => Array.isArray(pos) ? pos : [pos?.lng ?? pos?.getLng?.(), pos?.lat ?? pos?.getLat?.()];
+              const draw = async () => {
+                try {
+                  dailyPolylinesRef.current = [];
+                  for (let i = 0; i < data.itinerary.length; i++) {
+                    const day = data.itinerary[i];
+                    const positions = [];
+                    for (const it of day.items) {
+                      const mk = findMarkerForItem(it);
+                      let pos = null;
+                      if (mk) {
+                        pos = mk.getPosition();
+                      } else {
+                        const poi = findPoiForItem(it);
+                        if (poi && typeof poi.lng === 'number' && typeof poi.lat === 'number') {
+                          pos = [poi.lng, poi.lat];
+                        }
+                      }
+                      if (pos) {
+                        const last = positions[positions.length - 1];
+                        const lp = last ? (Array.isArray(last) ? last : [last?.lng ?? last?.getLng?.(), last?.lat ?? last?.getLat?.()]) : null;
+                        const pp = Array.isArray(pos) ? pos : [pos?.lng ?? pos?.getLng?.(), pos?.lat ?? pos?.getLat?.()];
+                        if (!lp || lp[0] !== pp[0] || lp[1] !== pp[1]) {
+                          positions.push(pos);
+                        }
+                      }
+                    }
+                    if (positions.length > 1) {
+                      const color = palette[i % palette.length];
+                      const routePoints = [];
+                      for (let k = 1; k < positions.length; k++) {
+                        const [lng1, lat1] = toArr(positions[k - 1]);
+                        const [lng2, lat2] = toArr(positions[k]);
+                        const origin = `${lng1},${lat1}`;
+                        const destinationStr = `${lng2},${lat2}`;
+                        const endpoint = routeMode === 'walking' ? 'directionWalking' : (routeMode === 'transit' ? 'directionTransit' : 'directionDriving');
+                        const qs = new URLSearchParams({ origin, destination: destinationStr, ...(routeMode === 'transit' ? { city: destination } : {}) }).toString();
+                        try {
+                          const resp = await fetch(`/api/amap/${endpoint}?${qs}`);
+                          const json = await resp.json();
+                          if (json.ok) {
+                            const segPts = extractPointsFromDirection(routeMode, json.data);
+                            if (segPts && segPts.length) {
+                              segPts.forEach(pt => routePoints.push(pt));
+                            } else {
+                              routePoints.push([lng1, lat1], [lng2, lat2]);
+                            }
+                          } else {
+                            routePoints.push([lng1, lat1], [lng2, lat2]);
+                          }
+                        } catch (e) {
+                          console.warn('路径规划失败，使用直线段作为退化:', e);
+                          routePoints.push([lng1, lat1], [lng2, lat2]);
+                        }
+                      }
+                      const finalPoints = routePoints.length > 1 
+                        ? routePoints 
+                        : [toArr(positions[0]), toArr(positions[positions.length - 1])];
+                      if (finalPoints.length > 1) {
+                        const polyline = new window.AMap.Polyline({
+                          path: finalPoints,
+                          strokeColor: color,
+                          strokeWeight: 5,
+                          strokeOpacity: 0.9,
+                          strokeStyle: 'solid',
+                          lineJoin: 'round',
+                          lineCap: 'round',
+                          zIndex: 999
+                        });
+                        mapInstanceRef.current.add(polyline);
+                        const mid = finalPoints[Math.floor(finalPoints.length / 2)];
+                        const arrow = new window.AMap.Marker({
+                          position: mid,
+                          content: `<div style="color: ${color}; font-size: 18px;">➡️ 第${day.day}天</div>`,
+                          offset: new window.AMap.Pixel(-10, -10)
+                        });
+                        mapInstanceRef.current.add(arrow);
+                        dailyPolylinesRef.current.push({ day: day.day, polyline, arrow });
+                      }
+                    }
+                  }
+                  if (selectedDay) highlightDay(selectedDay);
+                } catch (err) {
+                  console.warn('绘制每日日路线（贴路网）失败:', err);
+                }
+              };
+              draw();
+            } catch (err) {
+              console.warn('绘制每日行程路线失败:', err);
+            }
           });
         }
         
@@ -658,6 +1149,7 @@ export default function Home() {
       });
       const budgetData = await resBudget.json();
       setBudgetEstimate(budgetData);
+      setCurrentStep(3);
     } catch (e) {
       console.error(e);
     } finally {
@@ -694,6 +1186,8 @@ export default function Home() {
       
       // 直接更新本地状态，避免重新加载所有行程
       setSavedTrips(prev => [data, ...prev]);
+      setActiveTripId(data.id);
+      setCurrentStep(budgetEstimate ? 4 : 3);
       
     } catch (error) {
       console.error('保存行程失败:', error);
@@ -710,20 +1204,71 @@ export default function Home() {
       setPeople(trip.plan.people || 2);
       setPreferences(trip.plan.preferences || '美食, 文化, 历史');
       setPlan(trip.plan);
+      setActiveTripId(trip.id || null);
       
       // 如果有预算信息也加载
       if (trip.plan.budgetEstimate) {
         setBudgetEstimate(trip.plan.budgetEstimate);
+      }
+      setCurrentStep(trip.plan?.budgetEstimate ? 4 : 3);
+
+      // 加载该行程的费用记录
+      if (user && trip.id) {
+        try {
+          const accessToken = localStorage.getItem('supabase_access_token');
+          const res = await fetch(`/api/expenses?trip_id=${encodeURIComponent(trip.id)}`, {
+            headers: { 'Authorization': accessToken ? `Bearer ${accessToken}` : '' },
+          });
+          if (res.ok) {
+            const list = await res.json();
+            setExpenses(Array.isArray(list) ? list : []);
+          } else {
+            setExpenses([]);
+          }
+        } catch (e) {
+          console.warn('加载费用记录失败:', e);
+          setExpenses([]);
+        }
+      } else {
+        setExpenses([]);
       }
       
       // 更新地图标注
       if (mapInstanceRef.current && trip.plan && Array.isArray(trip.plan.pois)) {
         // 清除现有标记和路线
         mapInstanceRef.current.clearMap();
+        dailyPolylinesRef.current = [];
         
-        // 创建标记并添加时间信息
+        // 创建标记并添加时间信息（先过滤越界POI）
+        const haversineKm = (lng1, lat1, lng2, lat2) => {
+          const toRad = d => (d * Math.PI) / 180;
+          const R = 6371; // km
+          const dLat = toRad(lat2 - lat1);
+          const dLng = toRad(lng2 - lng1);
+          const a = Math.sin(dLat/2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2) ** 2;
+          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+          return R * c;
+        };
+        const cityCenter = Array.isArray(trip.plan.center) && trip.plan.center.length === 2
+          ? trip.plan.center
+          : (mapInstanceRef.current.getCenter() ? [mapInstanceRef.current.getCenter().lng, mapInstanceRef.current.getCenter().lat] : [118.7969, 32.0603]);
+        const radiusByCity = (dest) => {
+          if (!dest) return 50;
+          if (/北京|上海|广州|深圳/.test(dest)) return 60;
+          if (/重庆|成都|杭州|南京|西安|天津/.test(dest)) return 50;
+          return 40; // 其他城市更严格
+        };
+        const cityRadiusKm = radiusByCity(trip.plan.destination || destination);
+        const filteredPois = (trip.plan.pois || []).filter(p => {
+          const lng = Number(p.lng), lat = Number(p.lat);
+          if (!lng || !lat) return false;
+          const d = haversineKm(lng, lat, cityCenter[0], cityCenter[1]);
+          return d <= cityRadiusKm;
+        });
+        const poisToRender = filteredPois.length ? filteredPois : (trip.plan.pois || []);
         const markers = [];
-        trip.plan.pois.forEach(p => {
+        const nameToMarker = new Map();
+        poisToRender.forEach(p => {
           // 查找POI在行程中出现的时间
           let timeInfo = '';
           if (trip.plan.itinerary) {
@@ -790,30 +1335,21 @@ export default function Home() {
             </div>`;
             const infoWindow = new window.AMap.InfoWindow({ content: skeleton, offset: new window.AMap.Pixel(0, -30) });
             infoWindow.open(mapInstanceRef.current, marker.getPosition());
-            if (typeof window.requestIdleCallback === 'function') {
-              window.requestIdleCallback(() => {
-                const full = `<div style="padding: 12px; max-width: 250px;">
-                  <h4 style="margin: 0 0 8px 0; color: ${markerColor};">${p.name}</h4>
-                  ${timeInfo ? `<p style=\"margin: 0 0 8px 0; color: #666;\"><strong>时间:</strong> ${timeInfo}</p>` : ''}
-                  ${p.description ? `<p style=\"margin: 0 0 8px 0; color: #666;\">${p.description}</p>` : ''}
-                  ${p.type ? `<p style=\"margin: 0; color: #888;\"><strong>类型:</strong> ${p.type}</p>` : ''}
-                </div>`;
-                infoWindow.setContent(full);
-              }, { timeout: 1000 });
-            } else {
-              setTimeout(() => {
-                const full = `<div style="padding: 12px; max-width: 250px;">
-                  <h4 style="margin: 0 0 8px 0; color: ${markerColor};">${p.name}</h4>
-                  ${timeInfo ? `<p style=\"margin: 0 0 8px 0; color: #666;\"><strong>时间:</strong> ${timeInfo}</p>` : ''}
-                  ${p.description ? `<p style=\"margin: 0 0 8px 0; color: #666;\">${p.description}</p>` : ''}
-                  ${p.type ? `<p style=\"margin: 0; color: #888;\"><strong>类型:</strong> ${p.type}</p>` : ''}
-                </div>`;
-                infoWindow.setContent(full);
-              }, 100);
-            }
+            scheduleInfoWindowUpdate(() => {
+              const full = `<div style="padding: 12px; max-width: 250px;">
+                <h4 style="margin: 0 0 8px 0; color: ${markerColor};">${p.name}</h4>
+                ${timeInfo ? `<p style=\"margin: 0 0 8px 0; color: #666;\"><strong>时间:</strong> ${timeInfo}</p>` : ''}
+                ${p.description ? `<p style=\"margin: 0 0 8px 0; color: #666;\">${p.description}</p>` : ''}
+                ${p.type ? `<p style=\"margin: 0; color: #888;\"><strong>类型:</strong> ${p.type}</p>` : ''}
+              </div>`;
+              infoWindow.setContent(full);
+            });
           });
           
           markers.push(marker);
+          if (p.name) {
+            try { nameToMarker.set(p.name, marker); } catch {}
+          }
         });
         
         // 按需加载聚合
@@ -836,29 +1372,131 @@ export default function Home() {
           markers.forEach(m => mapInstanceRef.current.add(m));
         }
         
-        // 延迟绘制路线
+        // 延迟按“每日行程”绘制路线（贴路网）
         if (trip.plan.itinerary && markers.length > 1) {
-          const drawRoute = () => {
-            const path = markers.map(marker => marker.getPosition());
-            const polyline = new window.AMap.Polyline({
-              path: path,
-              strokeColor: '#1890ff',
-              strokeWeight: 3,
-              strokeOpacity: 0.6,
-              strokeStyle: 'solid'
-            });
-            mapInstanceRef.current.add(polyline);
-            const arrow = new window.AMap.Marker({
-              position: path[Math.floor(path.length / 2)],
-              content: '<div style="color: #1890ff; font-size: 20px;">➡️</div>',
-              offset: new window.AMap.Pixel(-10, -10)
-            });
-            mapInstanceRef.current.add(arrow);
+          const drawDayRoutes = async () => {
+            try {
+              const toArr = (pos) => Array.isArray(pos) ? pos : [pos?.lng ?? pos?.getLng?.(), pos?.lat ?? pos?.getLat?.()];
+              dailyPolylinesRef.current = [];
+              const findMarkerForItem = (item) => {
+                const keys = [];
+                if (item && item.location) keys.push(item.location);
+                if (item && item.title) keys.push(item.title);
+                for (const k of keys) {
+                  if (k && nameToMarker.has(k)) return nameToMarker.get(k);
+                }
+                for (const [poiName, mk] of nameToMarker.entries()) {
+                  for (const k of keys) {
+                    if (!k) continue;
+                    const a = (poiName || '').toLowerCase();
+                    const b = (k || '').toLowerCase();
+                    if (!a || !b) continue;
+                    if (a.includes(b) || b.includes(a)) return mk;
+                  }
+                }
+                return null;
+              };
+              const findPoiForItem = (item) => {
+                const keys = [];
+                if (item?.location) keys.push(item.location);
+                if (item?.title) keys.push(item.title);
+                for (const k of keys) {
+                  if (!k) continue;
+                  const kb = (k || '').toLowerCase();
+                  for (const p of (poisToRender || [])) {
+                    const pa = (p?.name || '').toLowerCase();
+                    if (!pa || !kb) continue;
+                    if (pa.includes(kb) || kb.includes(pa)) return p;
+                  }
+                }
+                return null;
+              };
+              for (let i = 0; i < trip.plan.itinerary.length; i++) {
+                const day = trip.plan.itinerary[i];
+                const positions = [];
+                for (const it of day.items) {
+                  const mk = findMarkerForItem(it);
+                  let pos = null;
+                  if (mk) {
+                    pos = mk.getPosition();
+                  } else {
+                    const poi = findPoiForItem(it);
+                    if (poi && typeof poi.lng === 'number' && typeof poi.lat === 'number') {
+                      pos = [poi.lng, poi.lat];
+                    }
+                  }
+                  if (pos) {
+                    const last = positions[positions.length - 1];
+                    const lp = last ? (Array.isArray(last) ? last : [last?.lng ?? last?.getLng?.(), last?.lat ?? last?.getLat?.()]) : null;
+                    const pp = Array.isArray(pos) ? pos : [pos?.lng ?? pos?.getLng?.(), pos?.lat ?? pos?.getLat?.()];
+                    if (!lp || lp[0] !== pp[0] || lp[1] !== pp[1]) {
+                      positions.push(pos);
+                    }
+                  }
+                }
+                if (positions.length > 1) {
+                  const color = routePalette[i % routePalette.length];
+                  const routePoints = [];
+                  for (let k = 1; k < positions.length; k++) {
+                    const [lng1, lat1] = toArr(positions[k - 1]);
+                    const [lng2, lat2] = toArr(positions[k]);
+                    const origin = `${lng1},${lat1}`;
+                    const destinationStr = `${lng2},${lat2}`;
+                    const endpoint = routeMode === 'walking' ? 'directionWalking' : (routeMode === 'transit' ? 'directionTransit' : 'directionDriving');
+                    const qs = new URLSearchParams({ origin, destination: destinationStr, ...(routeMode === 'transit' ? { city: trip.plan.destination } : {}) }).toString();
+                    try {
+                      const resp = await fetch(`/api/amap/${endpoint}?${qs}`);
+                      const json = await resp.json();
+                      if (json.ok) {
+                        const segPts = extractPointsFromDirection(routeMode, json.data);
+                        if (segPts && segPts.length) {
+                          segPts.forEach(pt => routePoints.push(pt));
+                        } else {
+                          routePoints.push([lng1, lat1], [lng2, lat2]);
+                        }
+                      } else {
+                        routePoints.push([lng1, lat1], [lng2, lat2]);
+                      }
+                    } catch (e) {
+                      console.warn('路径规划失败，使用直线段作为退化:', e);
+                      routePoints.push([lng1, lat1], [lng2, lat2]);
+                    }
+                  }
+                  const finalPoints = routePoints.length > 1 
+                    ? routePoints 
+                    : [toArr(positions[0]), toArr(positions[positions.length - 1])];
+                  if (finalPoints.length > 1) {
+                    const polyline = new window.AMap.Polyline({
+                      path: finalPoints,
+                      strokeColor: color,
+                      strokeWeight: 5,
+                      strokeOpacity: 0.9,
+                      strokeStyle: 'solid',
+                      lineJoin: 'round',
+                      lineCap: 'round',
+                      zIndex: 999
+                    });
+                    mapInstanceRef.current.add(polyline);
+                    const mid = finalPoints[Math.floor(finalPoints.length / 2)];
+                    const arrow = new window.AMap.Marker({
+                      position: mid,
+                      content: `<div style="color: ${color}; font-size: 18px;">➡️ 第${day.day}天</div>`,
+                      offset: new window.AMap.Pixel(-10, -10)
+                    });
+                    mapInstanceRef.current.add(arrow);
+                    dailyPolylinesRef.current.push({ day: day.day, polyline, arrow });
+                  }
+                }
+              }
+              if (selectedDay) highlightDay(selectedDay);
+            } catch (err) {
+              console.warn('绘制每日行程路线（贴路网）失败:', err);
+            }
           };
           if (typeof window.requestIdleCallback === 'function') {
-            window.requestIdleCallback(drawRoute, { timeout: 800 });
+            window.requestIdleCallback(drawDayRoutes, { timeout: 800 });
           } else {
-            setTimeout(drawRoute, 100);
+            setTimeout(drawDayRoutes, 100);
           }
         }
         
@@ -897,6 +1535,10 @@ export default function Home() {
       if (res.ok) {
         // 从本地状态中移除已删除的行程
         setSavedTrips(prev => prev.filter(trip => trip.id !== tripId));
+        if (activeTripId === tripId) {
+          setActiveTripId(null);
+          setExpenses([]);
+        }
         alert('行程删除成功');
       } else {
         throw new Error(`删除失败: ${res.status}`);
@@ -921,320 +1563,290 @@ export default function Home() {
     }
   }, [user]);
 
+  // 通过URL中的trip_id自动加载指定行程
+  useEffect(() => {
+    if (!router.isReady) return;
+    const { trip_id } = router.query || {};
+    if (!trip_id || autoLoadedFromQuery) return;
+    if (!user) {
+      // 未登录则提示并打开登录框
+      setShowAuthModal(true);
+      return;
+    }
+    const tryLoad = async () => {
+      // 优先从已加载的列表中查找
+      const found = savedTrips.find(t => String(t.id) === String(trip_id));
+      if (found) {
+        await loadTrip(found);
+        setAutoLoadedFromQuery(true);
+        return;
+      }
+      // 如果未找到，则主动拉取一次
+      try {
+        const list = await loadSavedTrips();
+        setSavedTrips(list);
+        const t = list.find(x => String(x.id) === String(trip_id));
+        if (t) {
+          await loadTrip(t);
+          setAutoLoadedFromQuery(true);
+        }
+      } catch (e) {
+        console.warn('根据URL加载指定行程失败:', e);
+      }
+    };
+    tryLoad();
+  }, [router.isReady, router.query, user, savedTrips, autoLoadedFromQuery]);
+
   // 当识别文本手动编辑或更新时，也自动尝试填充
   useEffect(() => {
     if (recognizedText && recognizedText.trim()) {
       parseSpeechToForm(recognizedText);
+      const exp = parseSpeechToExpense(recognizedText);
+      if (exp) {
+        setExpenseDraft(prev => ({
+          amount: String(exp.amount),
+          category: exp.category,
+          description: exp.description || prev.description,
+          day: exp.day ? String(exp.day) : prev.day,
+          time: exp.time || prev.time,
+        }));
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recognizedText]);
 
+  // 保存一条费用记录（优先云端，失败回退本地）
+  const saveExpense = async () => {
+    const amt = parseFloat(expenseDraft.amount);
+    if (isNaN(amt) || amt <= 0) {
+      alert('请输入有效的金额');
+      return;
+    }
+    const payload = {
+      amount: Math.round(amt),
+      category: expenseDraft.category || 'other',
+      description: expenseDraft.description || '',
+      day: expenseDraft.day ? parseInt(expenseDraft.day, 10) : null,
+      time: expenseDraft.time || '',
+      trip_id: activeTripId || null,
+    };
+    if (user && activeTripId) {
+      try {
+        const accessToken = localStorage.getItem('supabase_access_token');
+        const res = await fetch('/api/expenses', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': accessToken ? `Bearer ${accessToken}` : '' },
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+          const saved = await res.json();
+          setExpenses(prev => [saved, ...prev]);
+          setExpenseDraft({ amount: '', category: 'other', description: '', day: '', time: '' });
+          return;
+        }
+      } catch (e) {
+        console.warn('云端保存费用失败，采用本地保存:', e);
+      }
+    }
+    // 本地保存
+    const localItem = { id: String(Date.now()), created_at: new Date().toISOString(), user_id: user?.id || 'local', ...payload };
+    setExpenses(prev => [localItem, ...prev]);
+    setExpenseDraft({ amount: '', category: 'other', description: '', day: '', time: '' });
+  };
+
+  const deleteExpense = async (id) => {
+    if (!id) return;
+    if (user && activeTripId) {
+      try {
+        const accessToken = localStorage.getItem('supabase_access_token');
+        const res = await fetch(`/api/expenses?id=${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': accessToken ? `Bearer ${accessToken}` : '' },
+        });
+        if (res.ok) {
+          setExpenses(prev => prev.filter(e => e.id !== id));
+          return;
+        }
+      } catch (e) {
+        console.warn('云端删除费用失败，采用本地删除:', e);
+      }
+    }
+    setExpenses(prev => prev.filter(e => e.id !== id));
+  };
+
   return (
     <div className="container">
-      <header className="header">
-        <div className="header-content">
-          <h1 className="logo">✈️ AI 旅行规划师</h1>
-          <div className="header-actions">
-            {user ? (
-              <div className="user-info">
-                <span className="welcome-text">欢迎, {user.email}</span>
-                <button className="btn btn-secondary" onClick={handleSignOut}>退出</button>
-              </div>
-            ) : (
-              <button className="btn btn-primary" onClick={() => setShowAuthModal(true)}>
-                登录/注册
-              </button>
-            )}
-          </div>
-        </div>
-      </header>
+      <HeaderBar 
+        user={user}
+        onSignOut={handleSignOut}
+        onShowAuth={() => setShowAuthModal(true)}
+        pathname={router.pathname}
+      />
 
       <main className="main-content">
         {!user ? (
-          <div className="welcome-section">
-            <div className="hero">
-              <h2>开启您的智能旅行规划之旅</h2>
-              <p>AI 驱动的个性化旅行规划，为您量身定制完美行程</p>
-              <button 
-                className="btn btn-primary btn-large" 
-                onClick={() => setShowAuthModal(true)}
-              >
-                立即开始
-              </button>
-            </div>
-            
-            <div className="features">
-              <div className="feature-card">
-                <div className="feature-icon">🗺️</div>
-                <h3>智能行程规划</h3>
-                <p>基于AI算法为您生成个性化的旅行路线</p>
-              </div>
-              <div className="feature-card">
-                <div className="feature-icon">💰</div>
-                <h3>预算管理</h3>
-                <p>智能预算分配，让旅行更经济实惠</p>
-              </div>
-              <div className="feature-card">
-                <div className="feature-icon">💾</div>
-                <h3>行程保存</h3>
-                <p>登录后可保存和管理多个旅行计划</p>
-              </div>
-            </div>
-          </div>
+          <WelcomeSection onGetStarted={() => setShowAuthModal(true)} />
         ) : (
-          <>
-            <div className="tool-section">
-              <div className="card">
-                <h3>语音输入</h3>
-                <label>识别文本</label>
-                <textarea 
-                  rows={3} 
-                  value={recognizedText} 
-                  onChange={(e) => setRecognizedText(e.target.value)} 
-                  placeholder="例如：我想去日本，5天，预算1万元，喜欢美食和动漫，带孩子" 
-                />
-                <div className="voice-controls">
-                  <button 
-                    className={`btn btn-secondary ${isRecording ? 'recording' : ''}`} 
-                    onClick={startRecording}
-                    disabled={isRecording}
+          <div className="logged-in-content">
+            {/* 网格布局分离地图和工具区 */}
+            <div className="main-content-grid">
+              {/* 左侧地图区域 */}
+              <MapPanel mapRef={mapRef} loading={mapLoading} />
+
+              {/* 右侧工具区域 */}
+              <div className="tools-section">
+                <div className="steps">
+                  <div
+                    className={`step ${currentStep === 1 ? 'active' : ''}`}
+                    onClick={() => setCurrentStep(1)}
+                    style={{ cursor: 'pointer' }}
                   >
-                    🎤 {isRecording ? '录音中...' : '开始语音'}
-                  </button>
-                  <button 
-                    className="btn btn-secondary" 
-                    onClick={stopRecording}
-                    disabled={!isRecording}
+                    语音
+                  </div>
+                  <div
+                    className={`step ${currentStep === 2 ? 'active' : ''}`}
+                    onClick={() => setCurrentStep(2)}
+                    style={{ cursor: 'pointer' }}
                   >
-                    ⏹️ 停止语音
-                  </button>
-                  {isRecording && (
-                    <div className="recording-timer">
-                      <span className="timer-text">⏱️ {recordingTime}秒</span>
-                      <div className="timer-progress">
-                        <div 
-                          className="timer-progress-bar" 
-                          style={{ width: `${(recordingTime / 60) * 100}%` }}
-                        ></div>
-                      </div>
+                    设置
+                  </div>
+                  <div
+                    className={`step ${currentStep === 3 ? 'active' : ''}`}
+                    onClick={() => setCurrentStep(3)}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    结果
+                  </div>
+                  <div
+                    className={`step ${currentStep === 4 ? 'active' : ''}`}
+                    onClick={() => setCurrentStep(4)}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    预算
+                  </div>
+                  <div
+                    className={`step ${currentStep === 5 ? 'active' : ''}`}
+                    onClick={() => setCurrentStep(5)}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    费用
+                  </div>
+                  <div
+                    className={`step ${currentStep === 6 ? 'active' : ''}`}
+                    onClick={() => setCurrentStep(6)}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    保存
+                  </div>
+                </div>
+
+                {currentStep === 1 && (
+                  <VoiceInputCard
+                    recognizedText={recognizedText}
+                    setRecognizedText={setRecognizedText}
+                    isRecording={isRecording}
+                    startRecording={startRecording}
+                    stopRecording={stopRecording}
+                    recordingTime={recordingTime}
+                    onNext={() => setCurrentStep(2)}
+                  />
+                )}
+
+                {currentStep === 2 && (
+                  <PlanSettingsCard
+                    destination={destination}
+                    setDestination={setDestination}
+                    days={days}
+                    setDays={setDays}
+                    budget={budget}
+                    setBudget={setBudget}
+                    people={people}
+                    setPeople={setPeople}
+                    preferences={preferences}
+                    setPreferences={setPreferences}
+                    routeMode={routeMode}
+                    setRouteMode={setRouteMode}
+                    showDailyRoutes={showDailyRoutes}
+                    setShowDailyRoutes={setShowDailyRoutes}
+                    generatePlan={generatePlan}
+                    loadingPlan={loadingPlan}
+                    plan={plan}
+                    savePlan={savePlan}
+                    onPrev={() => setCurrentStep(1)}
+                    onNext={() => setCurrentStep(3)}
+                  />
+                )}
+
+                {currentStep === 3 && (
+                  <PlanResults
+                    plan={plan}
+                    expandedActivity={expandedActivity}
+                    setExpandedActivity={setExpandedActivity}
+                    routePalette={routePalette}
+                    highlightDay={highlightDay}
+                    onPrev={() => setCurrentStep(2)}
+                    onNext={() => setCurrentStep(4)}
+                  />
+                )}
+
+                {currentStep === 4 && (
+                  budgetEstimate ? (
+                    <BudgetSummaryCard
+                      budgetEstimate={budgetEstimate}
+                      expenses={expenses}
+                      onPrev={() => setCurrentStep(3)}
+                      onNext={() => setCurrentStep(5)}
+                    />
+                  ) : (
+                    <div className="card">
+                      <div className="empty-hint">尚无预算估算，请先生成行程。</div>
                     </div>
-                  )}
-                </div>
-              </div>
+                  )
+                )}
 
-              <div className="card">
-                <h3>行程设置</h3>
-                <div className="row">
-                  <div className="input-group">
-                    <label>目的地</label>
-                    <input value={destination} onChange={(e) => setDestination(e.target.value)} />
-                  </div>
-                  <div className="input-group">
-                    <label>天数</label>
-                    <input type="number" min={1} value={days} onChange={(e) => setDays(parseInt(e.target.value || '1', 10))} />
-                  </div>
-                </div>
-                <div className="row">
-                  <div className="input-group">
-                    <label>预算（元）</label>
-                    <input type="number" min={0} value={budget} onChange={(e) => setBudget(parseInt(e.target.value || '0', 10))} />
-                  </div>
-                  <div className="input-group">
-                    <label>人数</label>
-                    <input type="number" min={1} value={people} onChange={(e) => setPeople(parseInt(e.target.value || '1', 10))} />
-                  </div>
-                </div>
-                <div className="input-group">
-                  <label>偏好</label>
-                  <input value={preferences} onChange={(e) => setPreferences(e.target.value)} />
-                </div>
-                <div className="action-buttons">
-                  <button 
-                    className="btn btn-primary" 
-                    onClick={generatePlan} 
-                    disabled={loadingPlan}
-                  >
-                    {loadingPlan ? '🔄 生成中…' : '🚀 生成行程'}
-                  </button>
-                  {plan && (
-                    <button 
-                      className="btn btn-success" 
-                      onClick={savePlan} 
-                      disabled={!plan}
-                    >
-                      💾 保存行程
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
+                {currentStep === 5 && (
+                  <ExpensesListCard
+                    expenseDraft={expenseDraft}
+                    setExpenseDraft={setExpenseDraft}
+                    recognizedText={recognizedText}
+                    parseSpeechToExpense={parseSpeechToExpense}
+                    saveExpense={saveExpense}
+                    expenses={expenses}
+                    deleteExpense={deleteExpense}
+                    onPrev={() => setCurrentStep(4)}
+                    onNext={() => setCurrentStep(6)}
+                  />
+                )}
 
-            <div className="results-section">
-              {plan && (
-                <div className="card plan-card">
-                  <h3>📋 详细行程安排</h3>
-                  {plan.itinerary.map(day => (
-                    <div key={day.day} className="day-plan">
-                      <div className="day-header">
-                        <strong>第 {day.day} 天</strong>
-                        {day.transportation && (
-                          <span className="transport-info">🚗 {day.transportation}</span>
-                        )}
-                        {day.accommodation && (
-                          <span className="accommodation-info">🏨 {day.accommodation}</span>
-                        )}
-                      </div>
-                      <ul className="itinerary-items">
-                        {day.items.map((it, idx) => {
-                          const isExpanded = expandedActivity?.day === day.day && expandedActivity?.time === it.time;
-                          return (
-                            <li 
-                              key={idx} 
-                              className={`itinerary-item ${isExpanded ? 'expanded' : ''}`}
-                              onClick={() => setExpandedActivity(isExpanded ? null : { day: day.day, time: it.time })}
-                              style={{ cursor: 'pointer' }}
-                            >
-                              <span className="time-badge">{it.time}</span>
-                              <div className="activity-details">
-                                <strong>{it.title}</strong>
-                                {it.description && <span className="activity-desc"> - {it.description}</span>}
-                                {it.type && <span className="activity-type">{it.type}</span>}
-                                {isExpanded && it.details && (
-                                  <div className="activity-details-expanded">
-                                    <p>{it.details}</p>
-                                    {it.location && <p><strong>📍 地点：</strong>{it.location}</p>}
-                                    {it.duration && <p><strong>⏱️ 时长：</strong>{it.duration}</p>}
-                                    {it.tips && <p><strong>💡 小贴士：</strong>{it.tips}</p>}
-                                  </div>
-                                )}
-                              </div>
-                              <span className="cost-estimate">¥{(typeof it.costEstimate === 'number' && !isNaN(it.costEstimate)) ? it.costEstimate : '--'}</span>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {budgetEstimate && (
-                <div className="card budget-card">
-                  <h3>💰 费用预算</h3>
-                  <ul>
-                    <li>交通：¥{budgetEstimate.transport}</li>
-                    <li>住宿：¥{budgetEstimate.accommodation}</li>
-                    <li>餐饮：¥{budgetEstimate.food}</li>
-                    <li>门票：¥{budgetEstimate.tickets}</li>
-                    <li><strong>合计：¥{budgetEstimate.total}</strong></li>
-                  </ul>
-                </div>
-              )}
-
-              {/* 始终渲染地图容器，加载时覆盖展示 */}
-              <div ref={mapRef} className="map map-container">
-                {mapLoading && (
-                  <div className="map-overlay">
-                    <div className="loading-spinner"></div>
-                    <span>地图加载中...</span>
-                  </div>
+                {currentStep === 6 && (
+                  <SavedTripsCard
+                    savedTrips={savedTrips}
+                    loadTrip={loadTrip}
+                    deleteTrip={deleteTrip}
+                    canSave={!!plan}
+                    onSavePlan={savePlan}
+                    onPrev={() => setCurrentStep(5)}
+                  />
                 )}
               </div>
-
-              {!!savedTrips?.length && (
-                <div className="card saved-trips-card">
-                  <h3>📁 已保存行程</h3>
-                  <div className="trips-list">
-                    {savedTrips.map((t) => (
-                      <div key={t.id} className="trip-item">
-                        <div className="trip-info">
-                          <strong>{t.name}</strong>
-                          <span className="trip-date">{new Date(t.created_at).toLocaleDateString()}</span>
-                        </div>
-                        <div className="trip-actions">
-                          <button 
-                            className="btn btn-small" 
-                            onClick={() => loadTrip(t)}
-                          >
-                            📂 加载
-                          </button>
-                          <button 
-                            className="btn btn-small btn-danger" 
-                            onClick={() => deleteTrip(t.id)}
-                          >
-                            🗑️ 删除
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
-          </>
+            </div>
         )}
       </main>
 
-      {/* Authentication Modal */}
-      {showAuthModal && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000
-        }}>
-          <div style={{
-            backgroundColor: 'white',
-            padding: '24px',
-            borderRadius: '8px',
-            minWidth: '300px'
-          }}>
-            <h3>{authMode === 'login' ? '登录' : '注册'}</h3>
-            <div style={{ marginBottom: '16px' }}>
-              <input
-                type="email"
-                placeholder="邮箱"
-                value={authEmail}
-                onChange={(e) => setAuthEmail(e.target.value)}
-                style={{ width: '100%', padding: '8px', marginBottom: '8px' }}
-              />
-              <input
-                type="password"
-                placeholder="密码"
-                value={authPassword}
-                onChange={(e) => setAuthPassword(e.target.value)}
-                style={{ width: '100%', padding: '8px' }}
-              />
-            </div>
-            <div style={{ display: 'flex', gap: '8px', justifyContent: 'space-between' }}>
-              <button 
-                onClick={authMode === 'login' ? handleSignIn : handleSignUp}
-                disabled={authLoading}
-              >
-                {authLoading ? '处理中...' : (authMode === 'login' ? '登录' : '注册')}
-              </button>
-              <button 
-                onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
-                style={{ background: 'none', border: 'none', color: '#666' }}
-              >
-                {authMode === 'login' ? '没有账号？注册' : '已有账号？登录'}
-              </button>
-              <button 
-                onClick={() => setShowAuthModal(false)}
-                style={{ background: 'none', border: 'none', color: '#666' }}
-              >
-                取消
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <AuthModal
+        visible={showAuthModal}
+        authMode={authMode}
+        setAuthMode={setAuthMode}
+        authEmail={authEmail}
+        setAuthEmail={setAuthEmail}
+        authPassword={authPassword}
+        setAuthPassword={setAuthPassword}
+        authLoading={authLoading}
+        onSignIn={handleSignIn}
+        onSignUp={handleSignUp}
+        onClose={() => setShowAuthModal(false)}
+      />
     </div>
   );
 }

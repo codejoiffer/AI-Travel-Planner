@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>地图加载测试</title>
+    <style>
+        body { margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+        #map { width: 100%; height: 500px; border: 2px solid #ccc; border-radius: 8px; }
+        .status { margin: 10px 0; padding: 10px; border-radius: 4px; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .loading { background: #fff3cd; color: #856404; }
+    </style>
+</head>
+<body>
+    <h1>高德地图加载测试</h1>
+    
+    <div id="status">
+        <div class="status loading">正在加载地图...</div>
+    </div>
+    
+    <div id="map"></div>
+    
+    <script>
+        // 从URL参数获取API密钥
+        const urlParams = new URLSearchParams(window.location.search);
+        const apiKey = urlParams.get('key') || '005dd96a8a5e8b866d15c21d6a08b699';
+        const securityCode = urlParams.get('security') || 'a0c7bf55739b36885ff1243cbff31f2d';
+        
+        console.log('使用API密钥:', apiKey);
+        console.log('使用安全代码:', securityCode);
+        
+        // 设置安全配置
+        window._AMapSecurityConfig = { securityJsCode: securityCode };
+        
+        // 创建地图脚本
+        const script = document.createElement('script');
+        script.src = `https://webapi.amap.com/maps?v=2.0&key=${apiKey}`;
+        script.async = true;
+        
+        script.onerror = function() {
+            console.error('地图脚本加载失败');
+            document.getElementById('status').innerHTML = 
+                '<div class="status error">地图脚本加载失败！请检查：<br>1. API密钥是否正确<br>2. 网络连接是否正常<br>3. 是否被浏览器插件拦截</div>';
+        };
+        
+        script.onload = function() {
+            console.log('地图脚本加载成功');
+            
+            if (window.AMap && document.getElementById('map')) {
+                try {
+                    const map = new AMap.Map('map', {
+                        zoom: 11,
+                        center: [116.397428, 39.90923], // 北京天安门
+                        viewMode: '2D'
+                    });
+                    
+                    console.log('地图初始化成功');
+                    document.getElementById('status').innerHTML = 
+                        '<div class="status success">地图加载成功！API密钥工作正常。</div>';
+                    
+                    // 添加标记点
+                    const marker = new AMap.Marker({
+                        position: [116.397428, 39.90923],
+                        title: '天安门'
+                    });
+                    map.add(marker);
+                    
+                } catch (error) {
+                    console.error('地图初始化错误:', error);
+                    document.getElementById('status').innerHTML = 
+                        '<div class="status error">地图初始化失败: ' + error.message + '</div>';
+                }
+            } else {
+                console.error('AMap对象或地图容器不存在');
+                document.getElementById('status').innerHTML = 
+                    '<div class="status error">AMap对象或地图容器不存在</div>';
+            }
+        };
+        
+        document.head.appendChild(script);
+    </script>
+</body>
+</html>

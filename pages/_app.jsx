@@ -50,6 +50,31 @@ function MyApp({ Component, pageProps }) {
           align-items: center;
           gap: 16px;
         }
+        /* 顶部子导航 */
+        .subheader-nav {
+          max-width: 1200px;
+          margin: 0 auto;
+          padding: 0 20px 12px 20px;
+          display: flex;
+          gap: 12px;
+        }
+        .subheader-nav a {
+          color: #555;
+          text-decoration: none;
+          padding: 8px 12px;
+          border-radius: 8px;
+          background: rgba(0,0,0,0.04);
+          border: 1px solid rgba(0,0,0,0.06);
+        }
+        .subheader-nav a:hover {
+          background: rgba(0,0,0,0.06);
+        }
+        .subheader-nav a.active {
+          color: #333;
+          background: #fff;
+          border-color: rgba(0,0,0,0.1);
+          box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
         
         .user-info {
           display: flex;
@@ -110,6 +135,107 @@ function MyApp({ Component, pageProps }) {
         
         .btn-danger:hover {
           background: #c82333;
+        }
+
+        /* 页面标题与网格 */
+        .page-title {
+          margin: 16px 0 8px 0;
+          color: #222;
+        }
+        .grid-two-cols {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 16px;
+        }
+
+        /* 首页网格布局 */
+        .main-content-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 24px;
+          margin: 20px 0;
+        }
+
+        .map-section {
+          position: relative;
+          border-radius: 12px;
+          overflow: hidden;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+          background: #fff;
+        }
+
+        .map-container {
+          width: 100%;
+          height: 600px;
+          position: relative;
+        }
+
+        .map-overlay {
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(255, 255, 255, 0.9);
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          z-index: 10;
+        }
+
+        .loading-spinner {
+          width: 40px;
+          height: 40px;
+          border: 3px solid #f3f3f3;
+          border-top: 3px solid #667eea;
+          border-radius: 50%;
+          animation: spin 1s linear infinite;
+          margin-bottom: 12px;
+        }
+
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+
+        .tools-section {
+          display: flex;
+          flex-direction: column;
+          gap: 20px;
+        }
+
+        /* 向导步骤条 */
+        .steps {
+          display: flex;
+          gap: 8px;
+          margin: 12px 0 16px 0;
+        }
+        .step {
+          flex: 1;
+          text-align: center;
+          padding: 10px 12px;
+          background: rgba(255,255,255,0.85);
+          border-radius: 10px;
+          border: 1px solid rgba(0,0,0,0.08);
+          color: #666;
+          font-weight: 600;
+        }
+        .step.active {
+          background: #fff;
+          color: #333;
+          border-color: rgba(0,0,0,0.12);
+          box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+
+        /* 卡片列表与空态 */
+        .empty-hint {
+          color: #666;
+          background: rgba(255,255,255,0.8);
+          padding: 16px;
+          border-radius: 12px;
+          border: 1px solid rgba(0,0,0,0.06);
+          text-align: center;
         }
         
         /* 地图标记动画 */
