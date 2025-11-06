@@ -65,7 +65,9 @@ docker run --env-file ./.env -p 3000:3000 ai-travel-planner:latest
 
 ```bash
 docker load -i ai-travel-planner-<commit-sha>.tar
-docker run --env-file ./.env -p 3000:3000 ghcr.io/<owner>/<repo>:<commit-sha>
+# 镜像名称为 <owner>/<repo>:<commit-sha>
+# 例如：codejoiffer/AI-Travel-Planner:<commit-sha>
+docker run --env-file ./.env -p 3000:3000 <owner>/<repo>:<commit-sha>
 ```
 
 如果是打了 `v*` tag 的构建，还会在 GitHub Releases 中附带镜像 `.tar` 文件，无需登录即可下载。
