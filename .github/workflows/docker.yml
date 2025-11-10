@@ -26,33 +26,33 @@ jobs:
           docker build -t ${{ github.repository }}:${{ github.sha }} .
       - name: Export image as tar
         run: |
-          docker save ${{ github.repository }}:${{ github.sha }} -o ai-travel-planner-${{ github.sha }}.tar
+          docker save ${{ github.repository }}:${{ github.sha }} -o llm_course-${{ github.sha }}.tar
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ai-travel-planner-image-${{ github.sha }}
-          path: ai-travel-planner-${{ github.sha }}.tar
+          name: llm_course-image-${{ github.sha }}
+          path: llm_course-${{ github.sha }}.tar
       - name: Push to ACR
         if: ${{ secrets.ALIYUN_REGISTRY && secrets.ACR_NAMESPACE }}
         run: |
-          docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.sha }}
-          docker push ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.sha }}
+          docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/llm_course:${{ github.sha }}
+          docker push ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/llm_course:${{ github.sha }}
       - name: Push tag to ACR (for releases)
         if: ${{ secrets.ALIYUN_REGISTRY && secrets.ACR_NAMESPACE && startsWith(github.ref, 'refs/tags/') }}
         run: |
-          docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.ref_name }}
-          docker push ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.ref_name }}
+          docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/llm_course:${{ github.ref_name }}
+          docker push ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/llm_course:${{ github.ref_name }}
       - name: Push latest tag (main/master)
         if: ${{ secrets.ALIYUN_REGISTRY && secrets.ACR_NAMESPACE && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
         run: |
-          docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:latest
-          docker push ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:latest
+          docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/llm_course:latest
+          docker push ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/llm_course:latest
       - name: Publish GitHub Release (attach image tar)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            ai-travel-planner-${{ github.sha }}.tar
+            llm_course-${{ github.sha }}.tar
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
