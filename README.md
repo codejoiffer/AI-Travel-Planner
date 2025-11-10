@@ -1,14 +1,24 @@
 # AI Travel Planner (Web)
 
-一个最小可运行的 Web 版 AI 旅行规划师骨架，包含前端（Next.js）与后端（API 路由），语音输入占位实现、行程生成示例、预算估算与地图展示（高德），支持 Supabase 云端同步行程与费用记录（已包含迁移与 RLS）。
+一个功能完整的 Web 版 AI 旅行规划师，包含前端（Next.js）与后端（API 路由），支持语音输入、智能行程生成、预算估算、地图展示（高德地图），以及 Supabase 云端同步行程与费用记录。
 
-## 功能
+## ✨ 最新功能更新
 
-- 语音输入（浏览器录音，后端识别接口占位返回示例文本）
-- 行程生成（后端示例计划，后续可接入阿里云百炼 LLM）
-- 预算估算（基于行程的简单估算）
-- 地图展示（高德地图，显示兴趣点）
-- 行程保存与费用记录（Supabase 云同步，未配置时回退本地内存）
+- **智能按日高亮**：选择某一天后自动隐藏其他天路线，清晰展示当日行程
+- **优雅导航体验**：窄导航栏支持鼠标悬停自动展开，带有状态颜色的文字提示气泡
+- **精准城市匹配**：改进 POI 地理编码逻辑，确保目的地与标注精确匹配，支持英文城市名称
+- **Docker 自动化**：完整的 GitHub Actions CI/CD 流水线，自动构建并推送镜像到阿里云 ACR
+
+## 🚀 核心功能
+
+- **语音输入识别** - 浏览器录音，支持实时语音转文本
+- **智能行程规划** - 基于目的地的多天行程自动生成
+- **精准预算估算** - 根据行程内容智能计算旅行预算
+- **交互式地图** - 高德地图集成，显示 POI 标注和路线规划
+- **按日高亮展示** - 选择特定日期，隐藏其他天路线，清晰查看当日行程
+- **云端数据同步** - Supabase 实时同步行程与费用记录
+- **响应式导航** - 窄导航栏悬停展开，智能文字提示
+- **Docker 容器化** - 完整的容器部署支持，自动化 CI/CD 流水线
 
 ## 环境变量
 
@@ -72,35 +82,49 @@ docker run --env-file ./.env -p 3000:3000 <owner>/<repo>:<commit-sha>
 
 如果是打了 `v*` tag 的构建，还会在 GitHub Releases 中附带镜像 `.tar` 文件，无需登录即可下载。
 
-## GitHub Actions（示例）
-参考 `assignment.md` 与仓库内 `.github/workflows/docker.yml` 的工作流，配置 ACR 登录与镜像推送。
+## 🐳 GitHub Actions 自动化部署
 
-触发与分支：已支持 `main` 与 `master` 的 push，以及手动触发（workflow_dispatch）。
+项目已配置完整的 CI/CD 流水线，自动构建 Docker 镜像并推送到阿里云容器镜像服务（ACR）。
 
-在仓库 Settings > Secrets 中添加：
+### 配置步骤
 
-- `ACR_REGISTRY`：如 `registry.cn-hangzhou.aliyuncs.com`
-- `ACR_NAMESPACE`：你的命名空间，如 `your-namespace`
-- `ACR_USERNAME` / `ACR_PASSWORD`：用于 `docker login` 的凭据
+1. **设置 GitHub Secrets**：在仓库 Settings > Secrets and variables > Actions 中添加：
+   - `ACR_REGISTRY` - 阿里云镜像仓库地址（如：`registry.cn-hangzhou.aliyuncs.com`）
+   - `ACR_NAMESPACE` - 你的命名空间
+   - `ACR_USERNAME` - 阿里云账号用户名
+   - `ACR_PASSWORD` - 阿里云账号密码或访问令牌
 
-Actions 会构建镜像并以 `${{ github.sha }}` 作为标签推送至：
+2. **触发构建**：
+   - 推送代码到 `main` 或 `master` 分支
+   - 创建版本标签（如：`git tag v1.0.0 && git push origin v1.0.0`）
+   - 在 GitHub Actions 页面手动触发工作流
 
-```
-${ACR_REGISTRY}/${ACR_NAMESPACE}/ai-travel-planner:${GITHUB_SHA}
-```
+### 镜像标签策略
 
-拉取并运行（示例，替换命名空间与标签）：
+- **提交哈希标签**：`ai-travel-planner:${GITHUB_SHA}`
+- **最新版本标签**：`ai-travel-planner:latest`（main/master 分支）
+- **版本标签**：`ai-travel-planner:v1.0.0`（tag 发布）
+
+### 拉取和运行镜像
 
 ```bash
-docker pull registry.cn-hangzhou.aliyuncs.com/your-namespace/ai-travel-planner:<commit-sha>
-docker run --env-file ./.env -p 3000:3000 registry.cn-hangzhou.aliyuncs.com/your-namespace/ai-travel-planner:<commit-sha>
+# 拉取最新版本
+docker pull ${ACR_REGISTRY}/${ACR_NAMESPACE}/ai-travel-planner:latest
 
-主分支还会推送 `latest` 标签：
-
-```bash
-docker pull registry.cn-hangzhou.aliyuncs.com/your-namespace/ai-travel-planner:latest
-docker run --env-file ./.env -p 3000:3000 registry.cn-hangzhou.aliyuncs.com/your-namespace/ai-travel-planner:latest
+# 运行容器
+docker run --env-file ./.env -p 3000:3000 \
+  -e NEXT_PUBLIC_MAPS_API_KEY=your_key \
+  -e NEXT_PUBLIC_SUPABASE_URL=your_url \
+  -e NEXT_PUBLIC_SUPABASE_ANON_KEY=your_key \
+  ${ACR_REGISTRY}/${ACR_NAMESPACE}/ai-travel-planner:latest
 ```
+
+### 镜像下载（无需登录）
+
+每次 CI 运行后，GitHub Actions 会生成可下载的镜像文件：
+- 进入仓库 `Actions` → 选择工作流 → `Artifacts`
+- 下载 `ai-travel-planner-image-<commit-sha>`
+- 本地加载：`docker load -i ai-travel-planner-<commit-sha>.tar`
 ```
 
 ## Supabase 数据库设置
