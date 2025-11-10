@@ -18,9 +18,9 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Login to ACR
-        if: ${{ secrets.ACR_REGISTRY && secrets.ACR_USERNAME && secrets.ACR_PASSWORD }}
+        if: ${{ secrets.ALIYUN_REGISTRY && secrets.ALIYUN_REGISTRY_USERNAME && secrets.ALIYUN_REGISTRY_PASSWORD }}
         run: |
-          echo ${{ secrets.ACR_PASSWORD }} | docker login ${{ secrets.ACR_REGISTRY }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
+          echo ${{ secrets.ALIYUN_REGISTRY_PASSWORD }} | docker login ${{ secrets.ALIYUN_REGISTRY }} -u ${{ secrets.ALIYUN_REGISTRY_USERNAME }} --password-stdin
       - name: Build image
         run: |
           docker build -t ${{ github.repository }}:${{ github.sha }} .
@@ -33,20 +33,20 @@ jobs:
           name: ai-travel-planner-image-${{ github.sha }}
           path: ai-travel-planner-${{ github.sha }}.tar
       - name: Push to ACR
-        if: ${{ secrets.ACR_REGISTRY && secrets.ACR_NAMESPACE }}
+        if: ${{ secrets.ALIYUN_REGISTRY && secrets.ACR_NAMESPACE }}
         run: |
-          docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.sha }}
-          docker push ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.sha }}
+          docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.sha }}
+          docker push ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.sha }}
       - name: Push tag to ACR (for releases)
-        if: ${{ secrets.ACR_REGISTRY && secrets.ACR_NAMESPACE && startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ secrets.ALIYUN_REGISTRY && secrets.ACR_NAMESPACE && startsWith(github.ref, 'refs/tags/') }}
         run: |
-          docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.ref_name }}
-          docker push ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.ref_name }}
+          docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.ref_name }}
+          docker push ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.ref_name }}
       - name: Push latest tag (main/master)
-        if: ${{ secrets.ACR_REGISTRY && secrets.ACR_NAMESPACE && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+        if: ${{ secrets.ALIYUN_REGISTRY && secrets.ACR_NAMESPACE && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
         run: |
-          docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:latest
-          docker push ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:latest
+          docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:latest
+          docker push ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:latest
       - name: Publish GitHub Release (attach image tar)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
