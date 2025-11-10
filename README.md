@@ -1,163 +1,109 @@
-# AI Travel Planner (Web)
+# LLM Course · AI Travel Planner
 
-一个功能完整的 Web 版 AI 旅行规划师，包含前端（Next.js）与后端（API 路由），支持语音输入、智能行程生成、预算估算、地图展示（高德地图），以及 Supabase 云端同步行程与费用记录。
+一个基于 Next.js 的 AI 旅行规划应用，包含前端界面与后端 API 路由，集成语音识别、行程规划、地图服务、行程与费用管理、限流与容错等能力。本文档聚焦于程序功能实现与架构说明；助教拉取与验收指南请参见 `docs/ta-check.md`。
 
-## ✨ 最新功能更新
+## 项目概述
 
-- **智能按日高亮**：选择某一天后自动隐藏其他天路线，清晰展示当日行程
-- **优雅导航体验**：窄导航栏支持鼠标悬停自动展开，带有状态颜色的文字提示气泡
-- **精准城市匹配**：改进 POI 地理编码逻辑，确保目的地与标注精确匹配，支持英文城市名称
-- **Docker 自动化**：完整的 GitHub Actions CI/CD 流水线，自动构建并推送镜像到阿里云 ACR
+- 技术栈：`Next.js`（前端 + API 路由）、`Node.js`、`Docker`
+- 目标：提供从“语音输入/文本偏好”到“多天行程 + 地图显示 + 预算估算 + 云端存储”的端到端体验
+- 发布：已构建并推送公开镜像至阿里云 ACR（详情见 `docs/ta-check.md`）
 
-## 🚀 核心功能
+## 程序功能
 
-- **语音输入识别** - 浏览器录音，支持实时语音转文本
-- **智能行程规划** - 基于目的地的多天行程自动生成
-- **精准预算估算** - 根据行程内容智能计算旅行预算
-- **交互式地图** - 高德地图集成，显示 POI 标注和路线规划
-- **按日高亮展示** - 选择特定日期，隐藏其他天路线，清晰查看当日行程
-- **云端数据同步** - Supabase 实时同步行程与费用记录
-- **响应式导航** - 窄导航栏悬停展开，智能文字提示
-- **Docker 容器化** - 完整的容器部署支持，自动化 CI/CD 流水线
+- 语音识别：浏览器录音，后端 `/api/speech/recognize` 对接科大讯飞（未配置密钥时提示缺失）
+- 智能行程规划：`/api/plan/create` 支持目的地、天数、预算、偏好等；注入 `LLM_PROVIDER=aliyun` 与 `LLM_API_KEY` 时调用百炼（Qwen），否则降级为示例数据
+- 地图集成：前端加载高德 JS API（`NEXT_PUBLIC_MAPS_API_KEY`）；服务端代理高德 Web 服务（`/api/amap/{service}`，需 `MAPS_API_KEY`）
+- 行程数据：`/api/trips` 获取/新增/删除，默认内存存储；配置 Supabase 后按用户鉴权访问
+- 费用记录：`/api/expenses` 按行程记录与管理，需用户鉴权（Supabase）
+- 预算估算：`/api/budget` 与前端组件协同，基于行程内容估算预算
+- 限流与容错：内置基于 IP+Path 的限流器；缺失外部密钥时降级为示例/报错提示
 
-## 环境变量
+## 系统架构
 
-参考 `.env.example`，在本地创建 `.env` 并填入（前端与后端均需配置 Supabase）：
+- 前端页面（`pages/*.jsx`）
+  - `index.jsx`：首页与欢迎模块、语音输入入口、地图加载
+  - `plan.jsx`：目的地与偏好设置，展示生成的多天行程
+  - `trips.jsx`：用户行程列表（内存或 Supabase）
+  - `expenses.jsx`：费用记录列表与新增/删除
+- 关键组件（`components/*`）
+  - `PlanSettingsCard`：目的地/天数/预算/偏好表单
+  - `PlanResults`：按日行程、地图中心与 POI 展示
+  - `MapPanel`：高德地图渲染与标注/路线
+  - `VoiceInputCard`：录音与语音识别触发
+  - `SavedTripsCard`、`ExpensesListCard`：行程与费用列表
+- 后端 API 路由（`pages/api/*`）
+  - `amap/[service].js`：统一代理高德 Web 服务（地理编码、输入提示、周边、驾车路线、静态图等）
+  - `plan/create.js`：行程生成（LLM 或内置示例），返回 `center`/`pois`/`itinerary`/`meta`
+  - `speech/recognize.js`：语音识别（PCM Base64 → 文本）
+  - `trips.js`：行程的获取/新增/删除（内存或 Supabase）
+  - `expenses.js`：费用记录的获取/新增/删除（需鉴权）
+- 工具模块（`utils/*`）
+  - `amap.js`：高德 JS API 加载与 Web 服务封装（键值读取自环境变量）
+  - `rate-limit.js`：简单限流器（IP + 路径）
+  - `trips.js`：行程数据存取封装（内存与 Supabase）
+- 数据层与存储
+  - Supabase：`supabase/migrations/*.sql` 提供建表与 RLS（行级安全）策略，前后端共用 `SUPABASE_URL/ANON_KEY`
+  - 内存模式：未配置 Supabase 时自动回退（开发/验收用），刷新不保留数据
+- 配置与构建
+  - `next.config.js`：Next 构建与运行配置
+  - `Dockerfile`：基于 `node:20-alpine` 构建，生产安装与运行
 
-```
-APPID=
-SPEECH_API_KEY=
-SPEECH_API_SECRET=
+## 目录结构（摘录）
 
-MAPS_API_KEY=
-MAPS_PROVIDER=gaode
-NEXT_PUBLIC_MAPS_API_KEY=
-NEXT_PUBLIC_AMAP_SECURITY_JS_CODE=
+- `pages/`：前端页面与 API 路由
+- `components/`：功能组件，如地图、行程、费用、录音等
+- `utils/`：地图封装、限流器、数据访问等
+- `supabase/migrations/`：数据库表与 RLS 策略
+- `docs/ta-check.md`：助教拉取与验收指南（公开镜像、环境注入与 API 示例）
 
-AccessKey=
-LLM_API_KEY=
-LLM_PROVIDER=aliyun
+## 开发与运行
 
-SUPABASE_URL=
-SUPABASE_ANON_KEY=
-NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_ANON_KEY=
-# 可选：本地策略检查脚本使用
-SUPABASE_SERVICE_ROLE_KEY=
-```
+- 本地开发：
+  - `npm install`
+  - `npm run dev`（打开 `http://localhost:3000`）
+- Docker 本地构建：
+  - `docker build -t llm_course:local .`
+  - `docker run --rm -p 3000:3000 llm_course:local`
+- 运行时环境变量：
+  - 地图：`NEXT_PUBLIC_MAPS_API_KEY`（前端）、`NEXT_PUBLIC_AMAP_SECURITY_JS_CODE`（可选）、`MAPS_API_KEY`（服务端）
+  - Supabase：`SUPABASE_URL`、`SUPABASE_ANON_KEY`
+  - 语音识别：`APPID`、`SPEECH_API_KEY`、`SPEECH_API_SECRET`
+  - 规划 LLM：`LLM_PROVIDER`（如 `aliyun`）、`LLM_API_KEY`
+  - 更多运行示例与一键命令见：`docs/ta-check.md`
 
-注意：不要在仓库中提交任何真实的密钥。部署时通过环境注入，或在设置页输入。
+## API 概览（摘要）
 
-提示：当 `.env`/`.env.local` 中已正确配置 Supabase（服务端与前端变量均设置）时，应用默认启用“云同步”。若缺失相关变量，则自动回退到内存存储，仅用于开发调试（刷新后不保留数据）。
+- 地图代理：`GET /api/amap/{service}`（`geocode`、`inputTips`、`placeAround`、`directionDriving`、`staticMap`）
+- 行程规划：`POST /api/plan/create`
+- 语音识别：`POST /api/speech/recognize`
+- 行程存储：`GET|POST|DELETE /api/trips`
+- 费用记录：`GET|POST|DELETE /api/expenses`
 
-## 本地运行
+接口入参与示例详见 `docs/ta-check.md`。
 
-```bash
-npm install
-npm run dev
-# 打开 http://localhost:3000
-```
+## CI/CD 与发布
 
-## Docker 构建与运行
+- GitHub Actions：见 `.github/workflows/docker.yml`，自动构建并推送至阿里云 ACR
+- 本地推送脚本：`scripts/push_acr.sh` 支持 `latest`/`SHA`/`v*` 标签与 VPC 域名
+- 镜像信息与拉取运行命令：详见 `docs/ta-check.md`
 
-```bash
-docker build -t ai-travel-planner:latest .
-docker run --env-file ./.env -p 3000:3000 ai-travel-planner:latest
-```
+## 设计与容错
 
-### 直接下载镜像文件（无需登录镜像仓库）
+- 缺失外部服务密钥时的降级策略：
+  - 行程规划：返回示例计划
+  - 地图代理：返回 `400 Bad Request`
+  - 语音识别：返回缺失密钥错误
+  - 行程/费用：未配置 Supabase 时使用内存模式；费用接口默认需鉴权
+- 限流：基于 IP 与路径，减少接口滥用
+- 错误处理：统一返回结构与状态码，日志打印关键路径
 
-在每次 CI 运行后，GitHub Actions 会上传可下载的镜像文件（`.tar`）：
+## 安全与合规
 
-- 进入仓库的 `Actions` > 选择最近一次工作流 > `Artifacts`
-- 下载 `ai-travel-planner-image-<commit-sha>`（包含 `ai-travel-planner-<commit-sha>.tar`）
-- 本地加载并运行：
+- 请勿在仓库提交真实密钥；推荐通过运行时环境变量注入
+- 课程示例值仅用于验收，勿用于生产；完成后清理容器与历史命令
 
-```bash
-docker load -i ai-travel-planner-<commit-sha>.tar
-# 镜像名称为 <owner>/<repo>:<commit-sha>
-# 例如：codejoiffer/AI-Travel-Planner:<commit-sha>
-docker run --env-file ./.env -p 3000:3000 <owner>/<repo>:<commit-sha>
-```
+## 相关文档
 
-如果是打了 `v*` tag 的构建，还会在 GitHub Releases 中附带镜像 `.tar` 文件，无需登录即可下载。
+- 助教拉取与验收指南：`docs/ta-check.md`
+- 作业提交说明：`docs/submission.md`
 
-## 🐳 GitHub Actions 自动化部署
-
-项目已配置完整的 CI/CD 流水线，自动构建 Docker 镜像并推送到阿里云容器镜像服务（ACR）。
-
-### 配置步骤
-
-1. **设置 GitHub Secrets**：在仓库 Settings > Secrets and variables > Actions 中添加：
-   - `ACR_REGISTRY` - 阿里云镜像仓库地址（如：`registry.cn-hangzhou.aliyuncs.com`）
-   - `ACR_NAMESPACE` - 你的命名空间
-   - `ACR_USERNAME` - 阿里云账号用户名
-   - `ACR_PASSWORD` - 阿里云账号密码或访问令牌
-
-2. **触发构建**：
-   - 推送代码到 `main` 或 `master` 分支
-   - 创建版本标签（如：`git tag v1.0.0 && git push origin v1.0.0`）
-   - 在 GitHub Actions 页面手动触发工作流
-
-### 镜像标签策略
-
-- **提交哈希标签**：`ai-travel-planner:${GITHUB_SHA}`
-- **最新版本标签**：`ai-travel-planner:latest`（main/master 分支）
-- **版本标签**：`ai-travel-planner:v1.0.0`（tag 发布）
-
-### 拉取和运行镜像
-
-```bash
-# 拉取最新版本
-docker pull ${ACR_REGISTRY}/${ACR_NAMESPACE}/ai-travel-planner:latest
-
-# 运行容器
-docker run --env-file ./.env -p 3000:3000 \
-  -e NEXT_PUBLIC_MAPS_API_KEY=your_key \
-  -e NEXT_PUBLIC_SUPABASE_URL=your_url \
-  -e NEXT_PUBLIC_SUPABASE_ANON_KEY=your_key \
-  ${ACR_REGISTRY}/${ACR_NAMESPACE}/ai-travel-planner:latest
-```
-
-### 镜像下载（无需登录）
-
-每次 CI 运行后，GitHub Actions 会生成可下载的镜像文件：
-- 进入仓库 `Actions` → 选择工作流 → `Artifacts`
-- 下载 `ai-travel-planner-image-<commit-sha>`
-- 本地加载：`docker load -i ai-travel-planner-<commit-sha>.tar`
-```
-
-## Supabase 数据库设置
-
-1. **创建数据库表**: 运行提供的迁移脚本创建 `trips` 与 `expenses` 表
-2. **启用邮箱验证**: 在 Supabase 控制台 > Authentication > Settings 中配置邮箱设置
-3. **配置环境变量**: 确保 `.env` 文件包含正确的 Supabase URL 和匿名密钥
-
-迁移脚本位置:
-
-- 行程：`supabase/migrations/001_create_trips_table.sql`
-- 费用：`supabase/migrations/002_create_expenses_table.sql`
-
-两张表均已启用 RLS（行级安全策略），确保用户只能访问自己的数据。
-
-## 后续接入建议
-
-- 将 `/api/speech/recognize` 接入科大讯飞 SDK 或 HTTP API。
-- 将 `/api/plan/create` 接入阿里云百炼 LLM，并返回更细致、可编辑的行程结构（含经纬度）。
-- 用 Supabase Auth 做登录注册，并用数据库存储用户行程与偏好。
-- 添加费用记录功能，支持语音输入开销记录
-- 实现多设备同步，确保行程数据云端备份
-
-## 批改用密钥（作业要求）
-
-若未使用阿里云的 API Key，请在此提供用于批改的“临时密钥”，有效期至少 3 个月：
-
-```
-# 示例占位，提交前替换为真实值（或提供获取方式）
-LLM_API_KEY_FOR_GRADING=***
-MAPS_API_KEY_FOR_GRADING=***
-SPEECH_API_KEY_FOR_GRADING=***
-SPEECH_API_SECRET_FOR_GRADING=***
-```
-
-注意：不要在代码中硬编码密钥。推荐在应用设置页输入或通过环境变量注入；仅在 README 的“批改用密钥”区域按作业要求提供评测所需信息。
