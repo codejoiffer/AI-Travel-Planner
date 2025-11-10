@@ -1,5 +1,33 @@
+// 规范化城市名称（去噪、别名、英文映射）
+function normalizeCityName(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  // 去除前后缀与噪声词
+  let city = s
+    .replace(/^中国/, '')
+    .replace(/[\s,，].*$/, '') // 逗号/空格后内容
+    .replace(/(市|县|区|州)$/,'')
+    .replace(/(旅游|旅行|度假|自由行)$/,'')
+    .trim();
+
+  // 常见英文别名映射到中文
+  const aliases = {
+    'tokyo': '东京', 'beijing': '北京', 'shanghai': '上海', 'nanjing': '南京',
+    'guangzhou': '广州', 'shenzhen': '深圳', 'hangzhou': '杭州', 'chengdu': '成都',
+    'chongqing': '重庆', 'xian': '西安', "xi'an": '西安', 'suzhou': '苏州',
+    'wuhan': '武汉', 'tianjin': '天津', 'changsha': '长沙', 'zhengzhou': '郑州',
+    'qingdao': '青岛', 'dalian': '大连', 'xiamen': '厦门', 'kunming': '昆明',
+    'guilin': '桂林', 'lijiang': '丽江', 'sanya': '三亚', 'hong kong': '香港',
+    'hongkong': '香港', 'macau': '澳门', 'macao': '澳门', 'taipei': '台北'
+  };
+  const lower = city.toLowerCase();
+  if (aliases[lower]) return aliases[lower];
+  return city;
+}
+
 // 根据目的地动态计算中心点
 function getCityCenter(city) {
+  const norm = normalizeCityName(city);
   const cityCenters = {
     '东京': [139.767125, 35.681236],
     '南京': [118.7969, 32.0603],
@@ -30,13 +58,13 @@ function getCityCenter(city) {
   
   // 检查是否匹配已知城市
   // 优先检查精确匹配
-  if (cityCenters[city]) {
-    return cityCenters[city];
+  if (cityCenters[norm]) {
+    return cityCenters[norm];
   }
   
   // 然后检查包含关系
   for (const [cityName, center] of Object.entries(cityCenters)) {
-    if (city.includes(cityName)) {
+    if (norm.includes(cityName)) {
       return center;
     }
   }
@@ -49,7 +77,7 @@ function getCityCenter(city) {
 // 动态解析城市中心点（优先使用高德地理编码），失败则返回 null
 async function resolveCityCenter(city, key) {
   try {
-    const cityName = (city || '').trim();
+    const cityName = normalizeCityName(city || '').trim();
     if (!cityName || !key) return null;
     const url = `https://restapi.amap.com/v3/geocode/geo?key=${encodeURIComponent(key)}&address=${encodeURIComponent(cityName)}`;
     const resp = await fetch(url);
@@ -81,7 +109,7 @@ async function geocodePlace(name, city, key) {
   try {
     // 确保只搜索中国境内的地点，并限制在对应城市
     // 从目的地中提取城市名称（去除'中国'前缀和可能的其他描述）
-    let cityName = city || '';
+    let cityName = normalizeCityName(city || '');
     
     // 智能城市名称提取：处理各种格式的目的地输入
     if (cityName.includes('中国')) {
@@ -156,19 +184,20 @@ async function geocodePlace(name, city, key) {
 
 function samplePlan(destination, days, budget, people, preferences) {
   console.log('目的地:', destination);
-  const center = getCityCenter(destination);
+  const normDest = normalizeCityName(destination);
+  const center = getCityCenter(normDest);
   console.log('计算的中心点:', center);
   
   // 根据目的地生成不同的POI
-  const isTokyo = destination.includes('东京');
-  const isNanjing = destination.includes('南京');
-  const isShanghai = destination.includes('上海');
-  const isGuangzhou = destination.includes('广州');
-  const isShenzhen = destination.includes('深圳');
-  const isHangzhou = destination.includes('杭州');
-  const isChengdu = destination.includes('成都');
-  const isXian = destination.includes('西安');
-  const isChongqing = destination.includes('重庆');
+  const isTokyo = normDest.includes('东京');
+  const isNanjing = normDest.includes('南京');
+  const isShanghai = normDest.includes('上海');
+  const isGuangzhou = normDest.includes('广州');
+  const isShenzhen = normDest.includes('深圳');
+  const isHangzhou = normDest.includes('杭州');
+  const isChengdu = normDest.includes('成都');
+  const isXian = normDest.includes('西安');
+  const isChongqing = normDest.includes('重庆');
   
   const pois = isTokyo ? [
     { name: '浅草寺', lng: 139.794, lat: 35.7148, type: '景点', description: '东京最古老的寺庙' },

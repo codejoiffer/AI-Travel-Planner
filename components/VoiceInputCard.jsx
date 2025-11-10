@@ -18,7 +18,7 @@ export default function VoiceInputCard({
         rows={3}
         value={recognizedText}
         onChange={(e) => setRecognizedText(e.target.value)}
-        placeholder="例如：我想去日本，5天，预算1万元，喜欢美食和动漫，带孩子"
+        placeholder="例如：我想去南京，5天，预算1万元，喜欢美食和风景，带孩子"
       />
       <div className="voice-controls">
         <button

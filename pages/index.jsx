@@ -18,6 +18,7 @@ import { loadAMap, lazyLoadPlugins } from '../utils/amap';
 export default function Home() {
   console.log('Home component rendered');
   const router = useRouter();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [destination, setDestination] = useState('南京');
   const [days, setDays] = useState(5);
   const [budget, setBudget] = useState(10000);
@@ -50,6 +51,46 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState(false); // 录音状态
   const recordingTimerRef = useRef(null); // 录音计时器引用
   const [currentStep, setCurrentStep] = useState(1); // 递进式步骤：1语音→2设置→3结果→4预算→5费用→6保存
+  const [sidebarWidth, setSidebarWidth] = useState(400);
+  const sidebarBodyRef = useRef(null);
+  const navRailRef = useRef(null);
+  const sidebarRef = useRef(null);
+  const hoverCloseDelayRef = useRef(null);
+  const stepStatus = (idx) => (idx < currentStep ? 'done' : (idx === currentStep ? 'active' : 'todo'));
+  const stepStatusText = (idx) => (idx < currentStep ? '完成' : (idx === currentStep ? '进行中' : '待办'));
+  const closeSidebar = () => setSidebarOpen(false);
+  const scrollSidebarTop = () => { const el = sidebarBodyRef.current; if (el) el.scrollTo({ top: 0, behavior: 'smooth' }); };
+  const handleHoverEnter = () => {
+    try { if (hoverCloseDelayRef.current) clearTimeout(hoverCloseDelayRef.current); } catch {}
+    setSidebarOpen(true);
+  };
+  const handleHoverLeave = () => {
+    try { if (hoverCloseDelayRef.current) clearTimeout(hoverCloseDelayRef.current); } catch {}
+    hoverCloseDelayRef.current = setTimeout(() => {
+      const railHovered = navRailRef.current && navRailRef.current.matches(':hover');
+      const sidebarHovered = sidebarRef.current && sidebarRef.current.matches(':hover');
+      if (!railHovered && !sidebarHovered) {
+        setSidebarOpen(false);
+      }
+    }, 180);
+  };
+  const onResizerMouseDown = (e) => {
+    if (typeof window !== 'undefined' && window.innerWidth <= 768) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+    const clamp = (v, min, max) => Math.min(Math.max(v, min), max);
+    const onMove = (ev) => {
+      const delta = ev.clientX - startX;
+      setSidebarWidth(clamp(startWidth + delta, 280, 560));
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
 
   // 路线相关状态与引用
   const [routeMode, setRouteMode] = useState('driving'); // driving|walking|transit
@@ -71,6 +112,19 @@ export default function Home() {
       }
     }
   );
+
+  // ---- Map interaction states ----
+  const [showTraffic, setShowTraffic] = useState(false);
+  const [showSatellite, setShowSatellite] = useState(false);
+  const [showRoadNet, setShowRoadNet] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchSuggestions, setSearchSuggestions] = useState([]);
+  const trafficLayerRef = useRef(null);
+  const satelliteLayerRef = useRef(null);
+  const roadNetLayerRef = useRef(null);
+  const geolocationRef = useRef(null);
+  const searchTimerRef = useRef(null);
+  const defaultCenterRef = useRef([118.7969, 32.0603]); // 南京中心
 
   // ---- Helpers: parse Chinese numbers and extract fields from speech text ----
   const chineseNumberToInt = (str) => {
@@ -294,14 +348,23 @@ export default function Home() {
     setSelectedDay(dayNum);
     try {
       const list = dailyPolylinesRef.current || [];
-      list.forEach(({ day, polyline }) => {
+      list.forEach(({ day, polyline, arrow }) => {
         if (!polyline) return;
         const isTarget = day === dayNum;
-        polyline.setOptions({
-          strokeWeight: isTarget ? 7 : 5,
-          strokeOpacity: isTarget ? 1.0 : 0.9,
-          zIndex: isTarget ? 1000 : 900,
-        });
+        if (isTarget) {
+          // 高亮目标路线：显示并加粗
+          polyline.show();
+          polyline.setOptions({
+            strokeWeight: 7,
+            strokeOpacity: 1.0,
+            zIndex: 1000,
+          });
+          if (arrow && arrow.show) arrow.show();
+        } else {
+          // 隐藏非目标路线
+          polyline.hide();
+          if (arrow && arrow.hide) arrow.hide();
+        }
       });
     } catch (e) {
       // ignore
@@ -516,7 +579,7 @@ export default function Home() {
             setMapLoading(true);
             mapInstanceRef.current = new window.AMap.Map(mapRef.current, {
               zoom: 11,
-              center: [118.7969, 32.0603], // 南京市中心
+              center: defaultCenterRef.current, // 南京市中心
               viewMode: '2D',
               mapStyle: 'amap://styles/normal',
             });
@@ -533,9 +596,18 @@ export default function Home() {
                       mapInstanceRef.current.addControl(new window.AMap.ToolBar());
                       // 其他控件按需延迟加载
                       setTimeout(() => {
-                        lazyLoadPlugins(['AMap.Scale'])
+                        lazyLoadPlugins(['AMap.Scale', 'AMap.Geolocation'])
                           .then(() => {
                             mapInstanceRef.current.addControl(new window.AMap.Scale());
+                            try {
+                              geolocationRef.current = new window.AMap.Geolocation({
+                                enableHighAccuracy: true,
+                                timeout: 5000,
+                                showCircle: false,
+                                zoomToAccuracy: true,
+                                buttonOffset: new window.AMap.Pixel(10, 20),
+                              });
+                            } catch {}
                           })
                           .catch(() => {
                             console.warn('Scale控件加载失败');
@@ -585,6 +657,180 @@ export default function Home() {
       setMapLoading(false); // 确保在初始化失败时也更新加载状态
     }
   };
+
+  // ---- Map controls handlers ----
+  const toggleTraffic = useCallback(() => {
+    try {
+      if (!mapInstanceRef.current) return;
+      if (!trafficLayerRef.current) {
+        trafficLayerRef.current = new window.AMap.TileLayer.Traffic({ zIndex: 10 });
+      }
+      const enable = !showTraffic;
+      setShowTraffic(enable);
+      if (enable) {
+        try { trafficLayerRef.current.setMap(mapInstanceRef.current); } catch {}
+      } else {
+        try { trafficLayerRef.current.setMap(null); } catch {}
+      }
+    } catch (e) {
+      console.warn('切换交通图层失败:', e);
+    }
+  }, [showTraffic]);
+
+  const toggleSatellite = useCallback(() => {
+    try {
+      if (!mapInstanceRef.current) return;
+      if (!satelliteLayerRef.current) {
+        satelliteLayerRef.current = new window.AMap.TileLayer.Satellite({ zIndex: 5 });
+      }
+      const enable = !showSatellite;
+      setShowSatellite(enable);
+      if (enable) {
+        try { satelliteLayerRef.current.setMap(mapInstanceRef.current); } catch {}
+      } else {
+        try { satelliteLayerRef.current.setMap(null); } catch {}
+      }
+    } catch (e) {
+      console.warn('切换卫星图层失败:', e);
+    }
+  }, [showSatellite]);
+
+  const toggleRoadNet = useCallback(() => {
+    try {
+      if (!mapInstanceRef.current) return;
+      if (!roadNetLayerRef.current) {
+        roadNetLayerRef.current = new window.AMap.TileLayer.RoadNet({ zIndex: 6 });
+      }
+      const enable = !showRoadNet;
+      setShowRoadNet(enable);
+      if (enable) {
+        try { roadNetLayerRef.current.setMap(mapInstanceRef.current); } catch {}
+      } else {
+        try { roadNetLayerRef.current.setMap(null); } catch {}
+      }
+    } catch (e) {
+      console.warn('切换路网图层失败:', e);
+    }
+  }, [showRoadNet]);
+
+  const locateMe = useCallback(async () => {
+    try {
+      if (!mapInstanceRef.current) return;
+      // 确保定位插件可用
+      if (!geolocationRef.current) {
+        await lazyLoadPlugins(['AMap.Geolocation']).catch(() => {});
+        try {
+          geolocationRef.current = new window.AMap.Geolocation({
+            enableHighAccuracy: true,
+            timeout: 5000,
+            showCircle: false,
+            zoomToAccuracy: true,
+          });
+        } catch {}
+      }
+      if (!geolocationRef.current) return;
+      geolocationRef.current.getCurrentPosition((status, result) => {
+        try {
+          if (status === 'complete' && result && result.position) {
+            const pos = result.position;
+            mapInstanceRef.current.setCenter([pos.lng, pos.lat]);
+            mapInstanceRef.current.setZoom(14);
+          } else {
+            console.warn('定位失败:', result);
+            alert('定位失败或被拒绝');
+          }
+        } catch {}
+      });
+    } catch (e) {
+      console.warn('定位异常:', e);
+    }
+  }, []);
+
+  const resetView = useCallback(() => {
+    try {
+      if (!mapInstanceRef.current) return;
+      mapInstanceRef.current.setMapStyle('amap://styles/light');
+      mapInstanceRef.current.setCenter(defaultCenterRef.current);
+      mapInstanceRef.current.setZoom(11);
+      // 关闭图层
+      if (trafficLayerRef.current) try { trafficLayerRef.current.setMap(null); } catch {}
+      if (satelliteLayerRef.current) try { satelliteLayerRef.current.setMap(null); } catch {}
+      if (roadNetLayerRef.current) try { roadNetLayerRef.current.setMap(null); } catch {}
+      setShowTraffic(false);
+      setShowSatellite(false);
+      setShowRoadNet(false);
+    } catch (e) {
+      console.warn('重置视图失败:', e);
+    }
+  }, []);
+
+  const onSelectDay = useCallback((dayNum) => {
+    if (dayNum === null) {
+      setSelectedDay(null);
+      // 恢复默认权重
+      try {
+        const list = dailyPolylinesRef.current || [];
+        list.forEach(({ polyline }) => polyline?.setOptions?.({ strokeWeight: 5, strokeOpacity: 0.9, zIndex: 999 }));
+      } catch {}
+      return;
+    }
+    highlightDay(dayNum);
+  }, [highlightDay]);
+
+  // 搜索建议（防抖调用服务端代理 /api/amap/inputTips）
+  useEffect(() => {
+    try {
+      const q = (searchQuery || '').trim();
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+      if (!q) {
+        setSearchSuggestions([]);
+        return;
+      }
+      searchTimerRef.current = setTimeout(async () => {
+        try {
+          const url = `/api/amap/inputTips?keywords=${encodeURIComponent(q)}&city=${encodeURIComponent(destination || '')}`;
+          const res = await fetch(url);
+          const json = await res.json().catch(() => ({}));
+          const list = json?.data?.tips || json?.data || [];
+          setSearchSuggestions(Array.isArray(list) ? list : []);
+        } catch (e) {
+          console.warn('搜索建议失败:', e);
+        }
+      }, 250);
+    } catch {}
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
+  }, [searchQuery, destination]);
+
+  const pickSuggestion = useCallback(async (sug) => {
+    try {
+      setSearchSuggestions([]);
+      const name = sug?.name || sug?.address || sug?.id || '';
+      let lnglat = null;
+      // 优先使用提示包含的 location
+      if (sug?.location) {
+        const [lng, lat] = String(sug.location).split(',').map(Number);
+        if (Number.isFinite(lng) && Number.isFinite(lat)) lnglat = [lng, lat];
+      }
+      if (!lnglat && name) {
+        const url = `/api/amap/geocode?address=${encodeURIComponent(name)}&city=${encodeURIComponent(destination || '')}`;
+        const res = await fetch(url);
+        const json = await res.json().catch(() => ({}));
+        const gs = json?.data?.geocodes || [];
+        if (gs[0]?.location) {
+          const [lng, lat] = String(gs[0].location).split(',').map(Number);
+          if (Number.isFinite(lng) && Number.isFinite(lat)) lnglat = [lng, lat];
+        }
+      }
+      if (lnglat && mapInstanceRef.current) {
+        mapInstanceRef.current.setCenter(lnglat);
+        mapInstanceRef.current.setZoom(14);
+      }
+    } catch (e) {
+      console.warn('选择建议失败:', e);
+    }
+  }, [destination]);
 
   // 信息窗更新调度：即便 requestIdleCallback 不触发也保证更新
   const scheduleInfoWindowUpdate = (fn) => {
@@ -848,6 +1094,13 @@ export default function Home() {
 
       // 等待地图实例初始化完成
       const mapReady = await waitForMapInitialization();
+      // 先行设置地图中心，避免后续渲染未命中时中心不更新
+      if (mapReady && mapInstanceRef.current && data && data.center) {
+        try {
+          mapInstanceRef.current.setCenter(data.center);
+          mapInstanceRef.current.setZoom(13);
+        } catch {}
+      }
       
       // Render markers on map with time annotations and routes
       if (mapReady && mapInstanceRef.current && data && Array.isArray(data.pois)) {
@@ -1675,7 +1928,7 @@ export default function Home() {
   };
 
   return (
-    <div className="container">
+    <div className="container-fluid">
       <HeaderBar 
         user={user}
         onSignOut={handleSignOut}
@@ -1683,62 +1936,131 @@ export default function Home() {
         pathname={router.pathname}
       />
 
-      <main className="main-content">
+      <main className="main-content main-content--fullscreen">
         {!user ? (
           <WelcomeSection onGetStarted={() => setShowAuthModal(true)} />
         ) : (
           <div className="logged-in-content">
             {/* 网格布局分离地图和工具区 */}
-            <div className="main-content-grid">
+            <div className="map-fullscreen">
               {/* 左侧地图区域 */}
-              <MapPanel mapRef={mapRef} loading={mapLoading} />
+              <MapPanel 
+                mapRef={mapRef} 
+                loading={mapLoading}
+                controlsProps={{
+                  disabled: mapLoading || !mapInstanceRef.current,
+                  showTraffic,
+                  showSatellite,
+                  showRoadNet,
+                  onToggleTraffic: toggleTraffic,
+                  onToggleSatellite: toggleSatellite,
+                  onToggleRoadNet: toggleRoadNet,
+                  onLocate: locateMe,
+                  onResetView: resetView,
+                  onToggleSidebar: () => setSidebarOpen(v => !v),
+                  sidebarOpen,
+                  routeMode,
+                  setRouteMode,
+                  showDailyRoutes,
+                  setShowDailyRoutes,
+                  daysCount: Array.isArray(plan?.itinerary) ? plan.itinerary.length : days,
+                  selectedDay,
+                  onSelectDay,
+                  searchQuery,
+                  setSearchQuery,
+                  suggestions: searchSuggestions,
+                  onPickSuggestion: pickSuggestion,
+                }}
+              />
 
-              {/* 右侧工具区域 */}
-              <div className="tools-section">
-                <div className="steps">
-                  <div
-                    className={`step ${currentStep === 1 ? 'active' : ''}`}
-                    onClick={() => setCurrentStep(1)}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    语音
-                  </div>
-                  <div
-                    className={`step ${currentStep === 2 ? 'active' : ''}`}
-                    onClick={() => setCurrentStep(2)}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    设置
-                  </div>
-                  <div
-                    className={`step ${currentStep === 3 ? 'active' : ''}`}
-                    onClick={() => setCurrentStep(3)}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    结果
-                  </div>
-                  <div
-                    className={`step ${currentStep === 4 ? 'active' : ''}`}
-                    onClick={() => setCurrentStep(4)}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    预算
-                  </div>
-                  <div
-                    className={`step ${currentStep === 5 ? 'active' : ''}`}
-                    onClick={() => setCurrentStep(5)}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    费用
-                  </div>
-                  <div
-                    className={`step ${currentStep === 6 ? 'active' : ''}`}
-                    onClick={() => setCurrentStep(6)}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    保存
+              {/* 左侧窄导航栏（点击展开侧边栏） */}
+              <div
+                className="nav-rail"
+                style={{ ['--nav-rail-width']: '56px' }}
+                ref={navRailRef}
+                onMouseEnter={handleHoverEnter}
+                onMouseLeave={handleHoverLeave}
+              >
+                <div
+                  className={`nav-item ${stepStatus(1)}`}
+                  onClick={() => { setCurrentStep(1); setSidebarOpen(true); }}
+                  title="语音"
+                >
+                  <span className="nav-icon">🎙️</span>
+                  <div className="nav-tooltip">
+                    <span className="nav-tip-label">语音</span>
+                    <span className="nav-tip-status">{stepStatusText(1)}</span>
                   </div>
                 </div>
+                <div
+                  className={`nav-item ${stepStatus(2)}`}
+                  onClick={() => { setCurrentStep(2); setSidebarOpen(true); }}
+                  title="设置"
+                >
+                  <span className="nav-icon">⚙️</span>
+                  <div className="nav-tooltip">
+                    <span className="nav-tip-label">设置</span>
+                    <span className="nav-tip-status">{stepStatusText(2)}</span>
+                  </div>
+                </div>
+                <div
+                  className={`nav-item ${stepStatus(3)}`}
+                  onClick={() => { setCurrentStep(3); setSidebarOpen(true); }}
+                  title="结果"
+                >
+                  <span className="nav-icon">📄</span>
+                  <div className="nav-tooltip">
+                    <span className="nav-tip-label">结果</span>
+                    <span className="nav-tip-status">{stepStatusText(3)}</span>
+                  </div>
+                </div>
+                <div
+                  className={`nav-item ${stepStatus(4)}`}
+                  onClick={() => { setCurrentStep(4); setSidebarOpen(true); }}
+                  title="预算"
+                >
+                  <span className="nav-icon">💰</span>
+                  <div className="nav-tooltip">
+                    <span className="nav-tip-label">预算</span>
+                    <span className="nav-tip-status">{stepStatusText(4)}</span>
+                  </div>
+                </div>
+                <div
+                  className={`nav-item ${stepStatus(5)}`}
+                  onClick={() => { setCurrentStep(5); setSidebarOpen(true); }}
+                  title="费用"
+                >
+                  <span className="nav-icon">🧾</span>
+                  <div className="nav-tooltip">
+                    <span className="nav-tip-label">费用</span>
+                    <span className="nav-tip-status">{stepStatusText(5)}</span>
+                  </div>
+                </div>
+                <div
+                  className={`nav-item ${stepStatus(6)}`}
+                  onClick={() => { setCurrentStep(6); setSidebarOpen(true); }}
+                  title="保存"
+                >
+                  <span className="nav-icon">💾</span>
+                  <div className="nav-tooltip">
+                    <span className="nav-tip-label">保存</span>
+                    <span className="nav-tip-status">{stepStatusText(6)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 侧边栏工具面板（折叠） */}
+              <aside
+                className={`sidebar-panel ${sidebarOpen ? 'open' : ''}`}
+                style={{ ['--sidebar-width']: `${sidebarWidth}px` }}
+                ref={sidebarRef}
+                onMouseEnter={handleHoverEnter}
+                onMouseLeave={handleHoverLeave}
+              >
+                <div className="sidebar-content">
+                <div className="sidebar-header"></div>
+
+                <div className="sidebar-body" ref={sidebarBodyRef}>
 
                 {currentStep === 1 && (
                   <VoiceInputCard
@@ -1828,7 +2150,14 @@ export default function Home() {
                     onPrev={() => setCurrentStep(5)}
                   />
                 )}
-              </div>
+                </div>
+                <div className="sidebar-footer">
+                  <button className="btn btn-secondary" onClick={closeSidebar}>关闭</button>
+                  <button className="btn btn-primary" onClick={scrollSidebarTop}>返回顶部</button>
+                </div>
+                <div className="sidebar-resizer" onMouseDown={onResizerMouseDown}></div>
+                </div>
+              </aside>
             </div>
             </div>
         )}
