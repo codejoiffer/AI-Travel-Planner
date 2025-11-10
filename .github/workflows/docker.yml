@@ -18,7 +18,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Login to ACR
-        if: ${{ secrets.ALIYUN_REGISTRY && secrets.ALIYUN_REGISTRY_USERNAME && secrets.ALIYUN_REGISTRY_PASSWORD }}
+        if: secrets.ALIYUN_REGISTRY && secrets.ALIYUN_REGISTRY_USERNAME && secrets.ALIYUN_REGISTRY_PASSWORD
         run: |
           echo ${{ secrets.ALIYUN_REGISTRY_PASSWORD }} | docker login ${{ secrets.ALIYUN_REGISTRY }} -u ${{ secrets.ALIYUN_REGISTRY_USERNAME }} --password-stdin
       - name: Build image
@@ -33,17 +33,17 @@ jobs:
           name: ai-travel-planner-image-${{ github.sha }}
           path: ai-travel-planner-${{ github.sha }}.tar
       - name: Push to ACR
-        if: ${{ secrets.ALIYUN_REGISTRY && secrets.ACR_NAMESPACE }}
+        if: secrets.ALIYUN_REGISTRY && secrets.ACR_NAMESPACE
         run: |
           docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.sha }}
           docker push ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.sha }}
       - name: Push tag to ACR (for releases)
-        if: ${{ secrets.ALIYUN_REGISTRY && secrets.ACR_NAMESPACE && startsWith(github.ref, 'refs/tags/') }}
+        if: secrets.ALIYUN_REGISTRY && secrets.ACR_NAMESPACE && startsWith(github.ref, 'refs/tags/')
         run: |
           docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.ref_name }}
           docker push ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:${{ github.ref_name }}
       - name: Push latest tag (main/master)
-        if: ${{ secrets.ALIYUN_REGISTRY && secrets.ACR_NAMESPACE && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+        if: secrets.ALIYUN_REGISTRY && secrets.ACR_NAMESPACE && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
         run: |
           docker tag ${{ github.repository }}:${{ github.sha }} ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:latest
           docker push ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/ai-travel-planner:latest
